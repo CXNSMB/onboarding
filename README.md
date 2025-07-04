@@ -1,36 +1,49 @@
 # GitHub Actions Azure OIDC Onboarding
 
-This repository contains templates for setting up a secure Azure App Registration with Service Principal for GitHub Actions OIDC authentication.
+Complete setup for secure GitHub Actions authentication with Azure using OIDC (no secrets needed!).
 
-## 🚀 Quick Setup (2 Steps)
+## 🚀 One Command Setup
 
-### Step 1: Create App Registration (Cloud Shell)
-
-1. **Login to Azure Portal** as Owner/Contributor
-2. **Open Cloud Shell** (Bash mode)
-3. **Paste this one-liner**:
+1. **Login to Azure Portal** as Owner
+2. **Open Cloud Shell** (Bash mode)  
+3. **Paste this command**:
 
 ```bash
 curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp-GitHub" "myorg" "myrepo" "main"
 ```
 
-Replace the parameters:
+**Replace the parameters:**
 - `"MyApp-GitHub"` → Your app name
 - `"myorg"` → Your GitHub organization
 - `"myrepo"` → Your GitHub repository  
 - `"main"` → Your GitHub branch
 
-**Output**: 
-- ✅ SUCCEEDED or ❌ FAILED
-- **AZURE_CLIENT_ID**: Copy this for GitHub Secrets
+**That's it!** The script will:
+- ✅ Create App Registration
+- ✅ Create Service Principal  
+- ✅ Setup Federated Credential (OIDC)
+- ✅ Assign RBAC with security restrictions
 
-### Step 2: Assign RBAC (Deploy to Azure)
+## 📋 Output
 
-Click to assign permissions in Azure Portal:
+The script provides clear feedback and outputs the GitHub Secrets you need:
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FCXNSMB%2Fonboarding%2Fmain%2Frbac-deploy-to-azure.json)
+```
+🎉 SETUP COMPLETED SUCCESSFULLY!
+=================================
 
-Use the **Service Principal Object ID** from Step 1 output.
+🎯 GitHub Secrets to add:
+   AZURE_CLIENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+   AZURE_TENANT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+   AZURE_SUBSCRIPTION_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+
+🔒 Security: Service Principal CANNOT assign these roles:
+   ❌ Owner
+   ❌ User Access Administrator
+   ❌ RBAC Administrator
+
+✅ Ready for GitHub Actions!
+```
 
 ## 📋 What gets created?
 
