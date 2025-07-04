@@ -1,12 +1,36 @@
 # GitHub Actions Azure OIDC Onboarding
 
-This repository contains a Bicep/ARM template for setting up a secure Azure App Registration with Service Principal for GitHub Actions OIDC authentication.
+This repository contains templates for setting up a secure Azure App Registration with Service Principal for GitHub Actions OIDC authentication.
 
-## 🚀 Quick Deploy
+## 🚀 Quick Setup (2 Steps)
 
-Click the button below to deploy directly to Azure:
+### Step 1: Create App Registration (Cloud Shell)
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FCXNSMB%2Fonboarding%2Fmain%2Fdeploy-to-azure.json)
+1. **Login to Azure Portal** as Owner/Contributor
+2. **Open Cloud Shell** (Bash mode)
+3. **Paste this one-liner**:
+
+```bash
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp-GitHub" "myorg" "myrepo" "main"
+```
+
+Replace the parameters:
+- `"MyApp-GitHub"` → Your app name
+- `"myorg"` → Your GitHub organization
+- `"myrepo"` → Your GitHub repository  
+- `"main"` → Your GitHub branch
+
+**Output**: 
+- ✅ SUCCEEDED or ❌ FAILED
+- **AZURE_CLIENT_ID**: Copy this for GitHub Secrets
+
+### Step 2: Assign RBAC (Deploy to Azure)
+
+Click to assign permissions in Azure Portal:
+
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FCXNSMB%2Fonboarding%2Fmain%2Frbac-deploy-to-azure.json)
+
+Use the **Service Principal Object ID** from Step 1 output.
 
 ## 📋 What gets created?
 
@@ -32,7 +56,9 @@ The template contains a **condition** that prevents the service principal from a
 | `githubRepo` | `onboarding` | GitHub repository name |
 | `githubRef` | `main` | GitHub branch/environment |
 
-## 🔧 Manual Deployment
+## 🔧 Alternative: Full CLI Deployment
+
+If you prefer to do everything via CLI, you can still use the original Bicep template:
 
 ```bash
 # Clone the repository
