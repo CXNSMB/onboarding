@@ -124,3 +124,15 @@ Add these secrets to your GitHub repository:
 - `AZURE_CLIENT_ID`: The Application (client) ID from the deployment output
 - `AZURE_TENANT_ID`: Your Azure Tenant ID
 - `AZURE_SUBSCRIPTION_ID`: Your Azure Subscription ID
+
+## ❓ Why No "Deploy to Azure" Button?
+
+This template cannot use the standard "Deploy to Azure" button because it requires **Microsoft Graph API** operations to:
+
+- Create App Registrations
+- Configure Federated Credentials for OIDC
+- Set up Service Principals with specific permissions
+
+The Azure Resource Manager (ARM) deployment service used by "Deploy to Azure" buttons cannot access Microsoft Graph APIs, which are required for Azure AD/Entra ID operations. This is why we use the Cloud Shell script approach instead, which has the necessary permissions to interact with both Azure Resource Manager and Microsoft Graph APIs.
+
+For security and functionality reasons, App Registration and OIDC setup must be done through dedicated tooling with proper Microsoft Graph permissions.
