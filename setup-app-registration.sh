@@ -243,20 +243,35 @@ log_verbose "  Issuer: https://token.actions.githubusercontent.com"
 log_verbose "  Subject: $SUBJECT"
 log_verbose "  Audience: api://AzureADTokenExchange"
 
-if [[ "$VERBOSE" == "true" ]]; then
-    az ad app federated-credential create --id $APP_ID --parameters "{\"name\":\"$CREDENTIAL_NAME\",\"issuer\":\"https://token.actions.githubusercontent.com\",\"subject\":\"$SUBJECT\",\"audiences\":[\"api://AzureADTokenExchange\"]}"
-    CRED_CREATE_STATUS=$?
+# Check if federated credential already exists
+log_verbose "Checking for existing federated credential..."
+EXISTING_CRED=$(az ad app federated-credential list --id $APP_ID --query "[?name=='$CREDENTIAL_NAME'].name" -o tsv 2>/dev/null)
+if [ ! -z "$EXISTING_CRED" ]; then
+    echo "✅ Federated Credential already exists: $CREDENTIAL_NAME"
+    log_verbose "Found existing federated credential, reusing it"
 else
-    az ad app federated-credential create --id $APP_ID --parameters "{\"name\":\"$CREDENTIAL_NAME\",\"issuer\":\"https://token.actions.githubusercontent.com\",\"subject\":\"$SUBJECT\",\"audiences\":[\"api://AzureADTokenExchange\"]}" >/dev/null 2>&1
-    CRED_CREATE_STATUS=$?
-fi
+    log_verbose "Creating new federated credential..."
+    if [[ "$VERBOSE" == "true" ]]; then
+        az ad app federated-credential create --id $APP_ID --parameters "{\"name\":\"$CREDENTIAL_NAME\",\"issuer\":\"https://token.actions.githubusercontent.com\",\"subject\":\"$SUBJECT\",\"audiences\":[\"api://AzureADTokenExchange\"]}"
+        CRED_CREATE_STATUS=$?
+    else
+        az ad app federated-credential create --id $APP_ID --parameters "{\"name\":\"$CREDENTIAL_NAME\",\"issuer\":\"https://token.actions.githubusercontent.com\",\"subject\":\"$SUBJECT\",\"audiences\":[\"api://AzureADTokenExchange\"]}" >/dev/null 2>&1
+        CRED_CREATE_STATUS=$?
+    fi
 
-if [ $CRED_CREATE_STATUS -ne 0 ]; then
-    echo "❌ FAILED - Could not create Federated Credential"
-    log_verbose "Error details: Check if credential name already exists or GitHub details are correct"
-    exit 1
+    if [ $CRED_CREATE_STATUS -ne 0 ]; then
+        echo "❌ FAILED - Could not create Federated Credential"
+        log_verbose "Error details: Check if credential name conflicts or GitHub details are correct"
+        log_verbose "Try running in verbose mode to see detailed error output"
+        # Try to show existing credentials for debugging
+        if [[ "$VERBOSE" == "true" ]]; then
+            echo "🔍 [VERBOSE] Existing federated credentials:"
+            az ad app federated-credential list --id $APP_ID --query "[].{name:name, subject:subject}" -o table 2>/dev/null || echo "Could not list existing credentials"
+        fi
+        exit 1
+    fi
+    echo "✅ Federated Credential created"
 fi
-echo "✅ Federated Credential created"
 log_verbose "GitHub Actions can now authenticate without secrets using OIDC"
 echo ""
 
