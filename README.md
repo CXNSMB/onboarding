@@ -2,28 +2,48 @@
 
 Complete setup for secure GitHub Actions authentication with Azure using OIDC (no secrets needed!).
 
-## 🚀 One Command Setup
+## 🚀 Quick Start
 
-1. **Login to Azure Portal** as Owner
-2. **Open Cloud Shell** (Bash mode)  
-3. **Paste this command**:
+### Standard Setup (Default Parameters)
+
+**For CXNSMB/azlighthouse repository:**
 
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "Lubon Lighthouse Github" "CXNSMB" "azlighthouse" "main"
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash
+```
+
+This uses the default parameters:
+- App Name: `CXNSMB-github-lighthouse`
+- GitHub Org: `CXNSMB`
+- GitHub Repo: `azlighthouse`
+- Branch: `main`
+
+### Custom Setup
+
+**For your own repository:**
+
+```bash
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "YourApp-GitHub" "your-org" "your-repo" "main"
 ```
 
 **Replace the parameters:**
-- `"MyApp-GitHub"` → Your app name
-- `"myorg"` → Your GitHub organization
-- `"myrepo"` → Your GitHub repository  
+- `"YourApp-GitHub"` → Your app name
+- `"your-org"` → Your GitHub organization
+- `"your-repo"` → Your GitHub repository  
 - `"main"` → Your GitHub branch
 
 ### 🔍 Verbose Mode
 
-For detailed logging and troubleshooting, add `verbose` as the 5th parameter:
+**Standard with verbose output:**
 
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "Lubon Lighthouse Github" "CXNSMB" "azlighthouse" "main" verbose
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "" "" "" "" verbose
+```
+
+**Custom with verbose output:**
+
+```bash
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "YourApp-GitHub" "your-org" "your-repo" "main" verbose
 ```
 
 Verbose mode provides:
@@ -33,11 +53,18 @@ Verbose mode provides:
 - ✅ Error troubleshooting details
 - ✅ Complete resource summary
 
+## 📋 Prerequisites
+
+1. **Login to Azure Portal** as Owner or User Access Administrator
+2. **Open Azure Cloud Shell** (Bash mode)
+3. **Paste one of the commands above**
+
 **That's it!** The script will:
 - ✅ Create App Registration
 - ✅ Create Service Principal  
 - ✅ Setup Federated Credential (OIDC)
-- ✅ Assign RBAC with security restrictions
+- ✅ Assign User Access Administrator role (with security restrictions)
+- ✅ Assign Reader role (subscription-wide read access)
 
 ## 📋 Output
 
@@ -53,28 +80,42 @@ The script provides clear feedback and outputs the GitHub Secrets you need:
    AZURE_SUBSCRIPTION_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
 🔒 Security: Service Principal CANNOT assign these roles:
-   ❌ Owner
-   ❌ User Access Administrator
-   ❌ RBAC Administrator
+   ❌ Owner (8e3af657-a8ff-443c-a75c-2fe8c4bcb635)
+   ❌ User Access Administrator (18d7d88d-d35e-4fb5-a5c3-7773c20a72d9)
+   ❌ RBAC Administrator (f58310d9-a9f6-439a-9e8d-f62e7b41a168)
+
+✅ Service Principal HAS these roles:
+   ✅ User Access Administrator (with security restrictions)
+   ✅ Reader (subscription-wide read access)
 
 ✅ Ready for GitHub Actions!
 ```
 
 ## 📋 What gets created?
 
-- **App Registration**: `CXNSMB-github-lighthouse`
+- **App Registration**: `CXNSMB-github-lighthouse` (default) or your custom name
 - **Service Principal**: Linked to the app registration
 - **Federated Credential**: For GitHub Actions OIDC (passwordless authentication)
-- **RBAC Assignment**: User Access Administrator role with security restrictions
-- **Reader Role**: Assigned to the service principal for basic Azure resource visibility
+- **User Access Administrator Role**: With security restrictions to prevent dangerous role assignments
+- **Reader Role**: Subscription-wide read access for monitoring and reporting
 
 ## 🔒 Security Features
 
-The template contains a **condition** that prevents the service principal from assigning these dangerous roles:
+The script assigns **two RBAC roles** with different security levels:
 
-- ❌ Owner
-- ❌ User Access Administrator  
-- ❌ RBAC Administrator
+### User Access Administrator (Restricted)
+- ✅ Can assign most Azure roles
+- ❌ **Cannot** assign Owner role
+- ❌ **Cannot** assign User Access Administrator role  
+- ❌ **Cannot** assign RBAC Administrator role
+- 🔒 Protected by Azure RBAC conditions
+
+### Reader (Unrestricted)
+- ✅ Can read all subscription resources
+- ✅ Perfect for monitoring and cost analysis
+- ✅ No modification rights
+
+This dual-role approach provides maximum flexibility while maintaining security.
 
 ## ⚙️ Parameters
 
@@ -82,8 +123,31 @@ The template contains a **condition** that prevents the service principal from a
 |-----------|---------|-------------|
 | `appName` | `CXNSMB-github-lighthouse` | Name of the App Registration |
 | `githubOrg` | `CXNSMB` | GitHub organization name |
-| `githubRepo` | `onboarding` | GitHub repository name |
+| `githubRepo` | `azlighthouse` | GitHub repository name |
 | `githubRef` | `main` | GitHub branch/environment |
+| `verbose` | (none) | Add `verbose` for detailed logging |
+
+## 💡 Usage Examples
+
+**Most common - CXNSMB azlighthouse repo:**
+```bash
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash
+```
+
+**Different app name for CXNSMB/azlighthouse:**
+```bash
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyProject-GitHub"
+```
+
+**Different repository in CXNSMB:**
+```bash
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp" "CXNSMB" "my-repo"
+```
+
+**Completely custom with verbose:**
+```bash
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp" "my-org" "my-repo" "develop" verbose
+```
 
 ## 🔧 Alternative: Full CLI Deployment
 

@@ -29,7 +29,7 @@ fi
 # Parameters
 APP_NAME="${1:-CXNSMB-github-lighthouse}"
 GITHUB_ORG="${2:-CXNSMB}"
-GITHUB_REPO="${3:-onboarding}"
+GITHUB_REPO="${3:-azlighthouse}"
 GITHUB_REF="${4:-main}"
 
 echo "📋 Configuration:"
@@ -246,31 +246,47 @@ log_verbose "  Audience: api://AzureADTokenExchange"
 # Check if federated credential already exists
 log_verbose "Checking for existing federated credential..."
 EXISTING_CRED=$(az ad app federated-credential list --id $APP_ID --query "[?name=='$CREDENTIAL_NAME'].name" -o tsv 2>/dev/null)
-if [ ! -z "$EXISTING_CRED" ]; then
-    echo "✅ Federated Credential already exists: $CREDENTIAL_NAME"
-    log_verbose "Found existing federated credential, reusing it"
+
+# Also check for existing credential with same subject (GitHub repo/branch combination)
+EXISTING_SUBJECT=$(az ad app federated-credential list --id $APP_ID --query "[?subject=='$SUBJECT'].name" -o tsv 2>/dev/null)
+
+if [ ! -z "$EXISTING_CRED" ] || [ ! -z "$EXISTING_SUBJECT" ]; then
+    if [ ! -z "$EXISTING_CRED" ]; then
+        echo "✅ Federated Credential already exists: $CREDENTIAL_NAME"
+        log_verbose "Found existing federated credential with same name, reusing it"
+    elif [ ! -z "$EXISTING_SUBJECT" ]; then
+        echo "✅ Federated Credential already exists for this GitHub repo/branch: $EXISTING_SUBJECT"
+        log_verbose "Found existing federated credential with same subject, reusing it"
+    fi
 else
     log_verbose "Creating new federated credential..."
     if [[ "$VERBOSE" == "true" ]]; then
-        az ad app federated-credential create --id $APP_ID --parameters "{\"name\":\"$CREDENTIAL_NAME\",\"issuer\":\"https://token.actions.githubusercontent.com\",\"subject\":\"$SUBJECT\",\"audiences\":[\"api://AzureADTokenExchange\"]}"
+        CREATE_OUTPUT=$(az ad app federated-credential create --id $APP_ID --parameters "{\"name\":\"$CREDENTIAL_NAME\",\"issuer\":\"https://token.actions.githubusercontent.com\",\"subject\":\"$SUBJECT\",\"audiences\":[\"api://AzureADTokenExchange\"]}" 2>&1)
         CRED_CREATE_STATUS=$?
+        echo "🔍 [VERBOSE] Create output: $CREATE_OUTPUT"
     else
-        az ad app federated-credential create --id $APP_ID --parameters "{\"name\":\"$CREDENTIAL_NAME\",\"issuer\":\"https://token.actions.githubusercontent.com\",\"subject\":\"$SUBJECT\",\"audiences\":[\"api://AzureADTokenExchange\"]}" >/dev/null 2>&1
+        CREATE_OUTPUT=$(az ad app federated-credential create --id $APP_ID --parameters "{\"name\":\"$CREDENTIAL_NAME\",\"issuer\":\"https://token.actions.githubusercontent.com\",\"subject\":\"$SUBJECT\",\"audiences\":[\"api://AzureADTokenExchange\"]}" 2>&1)
         CRED_CREATE_STATUS=$?
     fi
 
-    if [ $CRED_CREATE_STATUS -ne 0 ]; then
+    # Check for specific error about existing credential
+    if [[ "$CREATE_OUTPUT" == *"already exists"* ]] || [[ "$CREATE_OUTPUT" == *"DuplicateKeyValue"* ]] || [[ "$CREATE_OUTPUT" == *"Conflict"* ]]; then
+        echo "✅ Federated Credential already exists (detected during creation)"
+        log_verbose "Credential was created by another process or already existed - continuing"
+        CRED_CREATE_STATUS=0
+    elif [ $CRED_CREATE_STATUS -ne 0 ]; then
         echo "❌ FAILED - Could not create Federated Credential"
         log_verbose "Error details: Check if credential name conflicts or GitHub details are correct"
-        log_verbose "Try running in verbose mode to see detailed error output"
+        log_verbose "Error output: $CREATE_OUTPUT"
         # Try to show existing credentials for debugging
         if [[ "$VERBOSE" == "true" ]]; then
             echo "🔍 [VERBOSE] Existing federated credentials:"
             az ad app federated-credential list --id $APP_ID --query "[].{name:name, subject:subject}" -o table 2>/dev/null || echo "Could not list existing credentials"
         fi
         exit 1
+    else
+        echo "✅ Federated Credential created"
     fi
-    echo "✅ Federated Credential created"
 fi
 log_verbose "GitHub Actions can now authenticate without secrets using OIDC"
 echo ""
@@ -283,22 +299,26 @@ SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 TENANT_ID=$(az account show --query tenantId -o tsv)
 
 log_verbose "RBAC Assignment details:"
-log_verbose "  Role: User Access Administrator (18d7d88d-d35e-4fb5-a5c3-7773c20a72d9)"
+log_verbose "  Role 1: User Access Administrator (18d7d88d-d35e-4fb5-a5c3-7773c20a72d9)"
+log_verbose "  Role 2: Reader (acdd72a7-3385-48ef-bd42-f606fba81ae7)"
 log_verbose "  Assignee: $SP_ID"
 log_verbose "  Scope: /subscriptions/$SUBSCRIPTION_ID"
-log_verbose "  Condition: Blocks Owner, User Access Admin, RBAC Admin assignments"
+log_verbose "  Condition: Blocks Owner, User Access Admin, RBAC Admin assignments (User Access Admin only)"
 
-# Create role assignment with conditions
-ROLE_DEF_ID="18d7d88d-d35e-4fb5-a5c3-7773c20a72d9"  # User Access Administrator
+# Create role assignments
+USER_ACCESS_ADMIN_ROLE="18d7d88d-d35e-4fb5-a5c3-7773c20a72d9"  # User Access Administrator
+READER_ROLE="acdd72a7-3385-48ef-bd42-f606fba81ae7"  # Reader
 
-# RBAC assignment with security conditions
+# RBAC assignment with security conditions for User Access Administrator
 CONDITION='((!(ActionMatches{'\''Microsoft.Authorization/roleAssignments/write'\''})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAllValues:GuidNotEquals {8e3af657-a8ff-443c-a75c-2fe8c4bcb635, 18d7d88d-d35e-4fb5-a5c3-7773c20a72d9, f58310d9-a9f6-439a-9e8d-f62e7b41a168})) AND ((!(ActionMatches{'\''Microsoft.Authorization/roleAssignments/delete'\''})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAllValues:GuidNotEquals {8e3af657-a8ff-443c-a75c-2fe8c4bcb635, 18d7d88d-d35e-4fb5-a5c3-7773c20a72d9, f58310d9-a9f6-439a-9e8d-f62e7b41a168}))'
 
+# Assignment 1: User Access Administrator with conditions
+log_verbose "Creating User Access Administrator role assignment with security conditions..."
 if [[ "$VERBOSE" == "true" ]]; then
-    echo "🔍 [VERBOSE] Executing role assignment with conditions..."
+    echo "🔍 [VERBOSE] Executing User Access Administrator role assignment with conditions..."
     az role assignment create \
       --assignee $SP_ID \
-      --role $ROLE_DEF_ID \
+      --role $USER_ACCESS_ADMIN_ROLE \
       --scope "/subscriptions/$SUBSCRIPTION_ID" \
       --description "GitHub Actions service principal - cannot assign/delete Owner, User Access Admin and RBAC Admin roles" \
       --condition "$CONDITION" \
@@ -307,7 +327,7 @@ if [[ "$VERBOSE" == "true" ]]; then
 else
     az role assignment create \
       --assignee $SP_ID \
-      --role $ROLE_DEF_ID \
+      --role $USER_ACCESS_ADMIN_ROLE \
       --scope "/subscriptions/$SUBSCRIPTION_ID" \
       --description "GitHub Actions service principal - cannot assign/delete Owner, User Access Admin and RBAC Admin roles" \
       --condition "$CONDITION" \
@@ -316,13 +336,41 @@ else
 fi
 
 if [ $RBAC_CREATE_STATUS -ne 0 ]; then
-    echo "❌ FAILED - Could not create RBAC assignment"
+    echo "❌ FAILED - Could not create User Access Administrator RBAC assignment"
     log_verbose "Error details: You may need Owner permissions to assign roles with conditions"
     log_verbose "Alternative: Assign User Access Administrator role manually in Azure Portal"
     exit 1
 fi
-echo "✅ RBAC assignment created with security restrictions"
+echo "✅ User Access Administrator role assigned with security restrictions"
+
+# Assignment 2: Reader role (no conditions needed)
+log_verbose "Creating Reader role assignment..."
+if [[ "$VERBOSE" == "true" ]]; then
+    echo "🔍 [VERBOSE] Executing Reader role assignment..."
+    az role assignment create \
+      --assignee $SP_ID \
+      --role $READER_ROLE \
+      --scope "/subscriptions/$SUBSCRIPTION_ID" \
+      --description "GitHub Actions service principal - read access to all resources"
+    READER_CREATE_STATUS=$?
+else
+    az role assignment create \
+      --assignee $SP_ID \
+      --role $READER_ROLE \
+      --scope "/subscriptions/$SUBSCRIPTION_ID" \
+      --description "GitHub Actions service principal - read access to all resources" >/dev/null 2>&1
+    READER_CREATE_STATUS=$?
+fi
+
+if [ $READER_CREATE_STATUS -ne 0 ]; then
+    echo "⚠️  WARNING - Could not create Reader RBAC assignment"
+    log_verbose "Reader role assignment failed, but continuing as this is not critical"
+    log_verbose "You can manually assign the Reader role in Azure Portal if needed"
+else
+    echo "✅ Reader role assigned for subscription-wide read access"
+fi
 log_verbose "Service Principal can now manage most role assignments except dangerous ones"
+log_verbose "Service Principal also has read access to all subscription resources"
 echo ""
 
 echo "🎉 SETUP COMPLETED SUCCESSFULLY!"
@@ -344,7 +392,9 @@ if [[ "$VERBOSE" == "true" ]]; then
     echo "   - App Registration ID: $APP_ID"
     echo "   - Service Principal ID: $SP_ID" 
     echo "   - Federated Credential Subject: repo:$GITHUB_ORG/$GITHUB_REPO:ref:refs/heads/$GITHUB_REF"
-    echo "   - RBAC Role: User Access Administrator (18d7d88d-d35e-4fb5-a5c3-7773c20a72d9)"
+    echo "   - RBAC Roles: User Access Administrator + Reader"
+    echo "   - User Access Admin GUID: 18d7d88d-d35e-4fb5-a5c3-7773c20a72d9"
+    echo "   - Reader GUID: acdd72a7-3385-48ef-bd42-f606fba81ae7"
     echo "   - Security Condition: Blocks Owner/User Access Admin/RBAC Admin role assignments"
     echo ""
     echo "🆘 If you encounter issues:"
@@ -354,12 +404,15 @@ if [[ "$VERBOSE" == "true" ]]; then
     echo "   4. Run with 'verbose' mode for detailed debugging"
     echo ""
 fi
-echo "   AZURE_SUBSCRIPTION_ID=$SUBSCRIPTION_ID"
-echo ""
+
 echo "🔒 Security: Service Principal CANNOT assign these roles:"
 echo "   ❌ Owner (8e3af657-a8ff-443c-a75c-2fe8c4bcb635)"
 echo "   ❌ User Access Administrator (18d7d88d-d35e-4fb5-a5c3-7773c20a72d9)"
 echo "   ❌ RBAC Administrator (f58310d9-a9f6-439a-9e8d-f62e7b41a168)"
+echo ""
+echo "✅ Service Principal HAS these roles:"
+echo "   ✅ User Access Administrator (with security restrictions)"
+echo "   ✅ Reader (subscription-wide read access)"
 echo ""
 
 if [[ "$VERBOSE" == "true" ]]; then
@@ -367,7 +420,7 @@ if [[ "$VERBOSE" == "true" ]]; then
     echo "🔍 [VERBOSE]   App Registration: $APP_NAME (ID: $APP_ID)"
     echo "🔍 [VERBOSE]   Service Principal: $SP_ID"
     echo "🔍 [VERBOSE]   Federated Credential: $CREDENTIAL_NAME"
-    echo "🔍 [VERBOSE]   RBAC Role: User Access Administrator with conditions"
+    echo "🔍 [VERBOSE]   RBAC Roles: User Access Administrator (with conditions) + Reader"
     echo "🔍 [VERBOSE]   Subscription: $SUBSCRIPTION_ID"
     echo "🔍 [VERBOSE]   Tenant: $TENANT_ID"
     echo ""
