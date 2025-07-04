@@ -9,7 +9,7 @@ Complete setup for secure GitHub Actions authentication with Azure using OIDC (n
 3. **Paste this command**:
 
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp-GitHub" "myorg" "myrepo" "main"
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "Lubon Lighthouse Github" "CXNSMB" "azlighthouse" "main"
 ```
 
 **Replace the parameters:**
@@ -23,7 +23,7 @@ curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-regis
 For detailed logging and troubleshooting, add `verbose` as the 5th parameter:
 
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp-GitHub" "myorg" "myrepo" "main" verbose
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "Lubon Lighthouse Github" "CXNSMB" "azlighthouse" "main" verbose
 ```
 
 Verbose mode provides:
