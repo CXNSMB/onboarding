@@ -18,6 +18,14 @@ log_verbose() {
 echo "🚀 GitHub Actions Azure OIDC Complete Setup"
 echo "=============================================="
 
+# Quick Azure CLI connectivity check
+echo "🔍 Checking Azure CLI connectivity..."
+if ! az account show >/dev/null 2>&1; then
+    echo "❌ FAILED - Not logged into Azure CLI"
+    echo "Please run: az login"
+    exit 1
+fi
+
 # Parameters
 APP_NAME="${1:-CXNSMB-github-lighthouse}"
 GITHUB_ORG="${2:-CXNSMB}"
@@ -45,55 +53,145 @@ fi
 echo "📌 Step 1/4: Creating App Registration..."
 log_verbose "Executing: az ad app create --display-name \"$APP_NAME\""
 
-if [[ "$VERBOSE" == "true" ]]; then
-    APP_ID=$(az ad app create --display-name "$APP_NAME" --query appId -o tsv)
-    APP_CREATE_STATUS=$?
+# Check if App Registration with this name already exists
+EXISTING_APP=$(az ad app list --display-name "$APP_NAME" --query "[0].appId" -o tsv 2>/dev/null)
+if [ ! -z "$EXISTING_APP" ]; then
+    echo "✅ App Registration already exists: $EXISTING_APP"
+    APP_ID="$EXISTING_APP"
+    log_verbose "Found existing App Registration, reusing it"
 else
-    APP_ID=$(az ad app create --display-name "$APP_NAME" --query appId -o tsv 2>/dev/null)
-    APP_CREATE_STATUS=$?
-fi
+    if [[ "$VERBOSE" == "true" ]]; then
+        APP_ID=$(az ad app create --display-name "$APP_NAME" --query appId -o tsv)
+        APP_CREATE_STATUS=$?
+    else
+        APP_ID=$(az ad app create --display-name "$APP_NAME" --query appId -o tsv 2>/dev/null)
+        APP_CREATE_STATUS=$?
+    fi
 
-if [ $APP_CREATE_STATUS -ne 0 ] || [ -z "$APP_ID" ]; then
-    echo "❌ FAILED - Could not create App Registration"
-    log_verbose "Error details: Check if app name already exists or if you have sufficient permissions"
-    exit 1
+    if [ $APP_CREATE_STATUS -ne 0 ] || [ -z "$APP_ID" ]; then
+        echo "❌ FAILED - Could not create App Registration"
+        log_verbose "Error details: Check if app name already exists or if you have sufficient permissions"
+        exit 1
+    fi
+    echo "✅ App Registration created: $APP_ID"
 fi
-echo "✅ App Registration created: $APP_ID"
-log_verbose "App Registration Object ID: $(az ad app show --id $APP_ID --query id -o tsv)"
+log_verbose "App Registration Object ID: $(az ad app show --id $APP_ID --query id -o tsv 2>/dev/null || echo 'N/A')"
 echo ""
 
 # Wait for Azure AD to propagate
-echo "⏳ Waiting for Azure AD propagation (10 seconds)..."
+echo "⏳ Waiting for Azure AD propagation (15 seconds)..."
 log_verbose "Azure AD needs time to replicate the new App Registration across all regions"
 if [[ "$VERBOSE" == "true" ]]; then
-    for i in {10..1}; do
+    for i in {15..1}; do
         echo "🔍 [VERBOSE] Waiting... $i seconds remaining"
         sleep 1
     done
 else
-    sleep 10
+    sleep 15
 fi
 log_verbose "Azure AD propagation wait completed"
 echo ""
 
 # Step 2: Service Principal
 echo "🔄 Step 2/4: Creating Service Principal..."
-log_verbose "Executing: az ad sp create --id $APP_ID"
+log_verbose "Checking for existing Service Principal first..."
 
-if [[ "$VERBOSE" == "true" ]]; then
-    SP_ID=$(az ad sp create --id $APP_ID --query id -o tsv)
-    SP_CREATE_STATUS=$?
+# Check if Service Principal already exists using different approach
+EXISTING_SP=$(az ad sp list --filter "appId eq '$APP_ID'" --query "[0].id" -o tsv 2>/dev/null)
+if [ ! -z "$EXISTING_SP" ]; then
+    echo "✅ Service Principal already exists: $EXISTING_SP"
+    SP_ID="$EXISTING_SP"
+    log_verbose "Found existing Service Principal, reusing it"
 else
-    SP_ID=$(az ad sp create --id $APP_ID --query id -o tsv 2>/dev/null)
-    SP_CREATE_STATUS=$?
-fi
+    log_verbose "Creating new Service Principal for App ID: $APP_ID"
+    # Try multiple approaches due to Azure CLI bugs
+    SP_CREATE_STATUS=1
+    
+    # Method 1: Try az ad sp create (may fail with JSON decode error)
+    for attempt in {1..3}; do
+        log_verbose "Attempt $attempt to create Service Principal using az ad sp create..."
+        
+        if [[ "$VERBOSE" == "true" ]]; then
+            CREATE_OUTPUT=$(az ad sp create --id $APP_ID 2>&1)
+            SP_CREATE_STATUS=$?
+            echo "🔍 [VERBOSE] Create output: $CREATE_OUTPUT"
+        else
+            CREATE_OUTPUT=$(az ad sp create --id $APP_ID 2>/dev/null)
+            SP_CREATE_STATUS=$?
+        fi
+        
+        # Check for the specific JSON decoding error and treat it as transient
+        if [[ "$CREATE_OUTPUT" == *"JSONDecodeError"* ]] || [[ "$CREATE_OUTPUT" == *"Expecting value: line 1 column 1"* ]]; then
+            log_verbose "Detected Azure CLI JSON decoding error - will try REST API method"
+            SP_CREATE_STATUS=1
+            break  # Skip retries and go to REST API method
+        fi
+        
+        if [ $SP_CREATE_STATUS -eq 0 ]; then
+            # Get the SP ID after successful creation
+            SP_ID=$(az ad sp list --filter "appId eq '$APP_ID'" --query "[0].id" -o tsv 2>/dev/null)
+            if [ ! -z "$SP_ID" ]; then
+                break
+            fi
+        fi
+        
+        if [ $attempt -lt 3 ]; then
+            log_verbose "Service Principal creation failed, waiting 5 seconds before retry..."
+            sleep 5
+        fi
+    done
+    
+    # Method 2: Try REST API if az ad sp create failed
+    if [ $SP_CREATE_STATUS -ne 0 ] || [ -z "$SP_ID" ]; then
+        log_verbose "Trying REST API method as fallback..."
+        
+        if [[ "$VERBOSE" == "true" ]]; then
+            REST_OUTPUT=$(az rest --method POST --url "https://graph.microsoft.com/v1.0/servicePrincipals" \
+                --body "{\"appId\":\"$APP_ID\",\"accountEnabled\":true}" \
+                --headers "Content-Type=application/json" 2>&1)
+            REST_STATUS=$?
+            echo "🔍 [VERBOSE] REST API output: $REST_OUTPUT"
+        else
+            REST_OUTPUT=$(az rest --method POST --url "https://graph.microsoft.com/v1.0/servicePrincipals" \
+                --body "{\"appId\":\"$APP_ID\",\"accountEnabled\":true}" \
+                --headers "Content-Type=application/json" 2>/dev/null)
+            REST_STATUS=$?
+        fi
+        
+        if [ $REST_STATUS -eq 0 ]; then
+            log_verbose "REST API Service Principal creation succeeded"
+            # Wait a moment for propagation
+            sleep 3
+            SP_ID=$(az ad sp list --filter "appId eq '$APP_ID'" --query "[0].id" -o tsv 2>/dev/null)
+            if [ ! -z "$SP_ID" ]; then
+                SP_CREATE_STATUS=0
+            fi
+        fi
+    fi
 
-if [ $SP_CREATE_STATUS -ne 0 ] || [ -z "$SP_ID" ]; then
-    echo "❌ FAILED - Could not create Service Principal"
-    log_verbose "Error details: App Registration may not be fully propagated yet"
-    exit 1
+    # Final fallback: check if Service Principal was created despite any errors
+    if [ $SP_CREATE_STATUS -ne 0 ] || [ -z "$SP_ID" ]; then
+        log_verbose "Service Principal creation failed, checking if it was created anyway..."
+        SP_ID=$(az ad sp list --filter "appId eq '$APP_ID'" --query "[0].id" -o tsv 2>/dev/null)
+        if [ ! -z "$SP_ID" ]; then
+            log_verbose "Service Principal found despite creation error - continuing"
+            SP_CREATE_STATUS=0
+        fi
+    fi
+
+    if [ $SP_CREATE_STATUS -ne 0 ] || [ -z "$SP_ID" ]; then
+        echo "❌ FAILED - Could not create Service Principal after trying multiple methods"
+        log_verbose "Error details: Azure AD propagation issue, Azure CLI bug, or permissions problem"
+        log_verbose "Common solutions:"
+        log_verbose "  1. Try running the script again after a few minutes"
+        log_verbose "  2. Update Azure CLI: az upgrade"
+        log_verbose "  3. Clear Azure CLI cache: az cache purge"
+        log_verbose "  4. Create Service Principal manually: az ad sp create --id $APP_ID"
+        log_verbose "  5. Check if you have permission to create Service Principals"
+        exit 1
+    fi
+    echo "✅ Service Principal created: $SP_ID"
 fi
-echo "✅ Service Principal created: $SP_ID"
 log_verbose "Service Principal will be used for RBAC assignments"
 echo ""
 
@@ -195,6 +293,29 @@ echo ""
 echo "🎯 GitHub Secrets to add:"
 echo "   AZURE_CLIENT_ID=$APP_ID"
 echo "   AZURE_TENANT_ID=$TENANT_ID"
+echo "   AZURE_SUBSCRIPTION_ID=$SUBSCRIPTION_ID"
+echo ""
+echo "📝 Next steps:"
+echo "   1. Add the secrets above to your GitHub repository"
+echo "   2. Use 'azure/login@v1' action with OIDC in your workflows"
+echo "   3. Reference: https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/configuring-openid-connect-in-azure"
+echo ""
+
+if [[ "$VERBOSE" == "true" ]]; then
+    echo "🔧 Troubleshooting info:"
+    echo "   - App Registration ID: $APP_ID"
+    echo "   - Service Principal ID: $SP_ID" 
+    echo "   - Federated Credential Subject: repo:$GITHUB_ORG/$GITHUB_REPO:ref:refs/heads/$GITHUB_REF"
+    echo "   - RBAC Role: User Access Administrator (18d7d88d-d35e-4fb5-a5c3-7773c20a72d9)"
+    echo "   - Security Condition: Blocks Owner/User Access Admin/RBAC Admin role assignments"
+    echo ""
+    echo "🆘 If you encounter issues:"
+    echo "   1. Azure CLI JSON errors: Try 'az cache purge' and 'az upgrade'"
+    echo "   2. Service Principal creation fails: Wait 5 minutes and retry"
+    echo "   3. RBAC assignment fails: Check if you have Owner permissions"
+    echo "   4. Run with 'verbose' mode for detailed debugging"
+    echo ""
+fi
 echo "   AZURE_SUBSCRIPTION_ID=$SUBSCRIPTION_ID"
 echo ""
 echo "🔒 Security: Service Principal CANNOT assign these roles:"
