@@ -18,6 +18,21 @@ curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-regis
 - `"myrepo"` → Your GitHub repository  
 - `"main"` → Your GitHub branch
 
+### 🔍 Verbose Mode
+
+For detailed logging and troubleshooting, add `verbose` as the 5th parameter:
+
+```bash
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp-GitHub" "myorg" "myrepo" "main" verbose
+```
+
+Verbose mode provides:
+- ✅ Detailed step-by-step execution logs
+- ✅ Current Azure context information  
+- ✅ Command-by-command output
+- ✅ Error troubleshooting details
+- ✅ Complete resource summary
+
 **That's it!** The script will:
 - ✅ Create App Registration
 - ✅ Create Service Principal  
