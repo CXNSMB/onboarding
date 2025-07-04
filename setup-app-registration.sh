@@ -49,6 +49,29 @@ if [[ "$VERBOSE" == "true" ]]; then
     echo ""
 fi
 
+# Register required Azure Resource Providers
+echo "📌 Registering Azure Resource Providers..."
+log_verbose "Registering required resource providers for Azure services"
+
+PROVIDERS=(
+    "Microsoft.Batch"
+    "Microsoft.Compute" 
+    "Microsoft.Capacity"
+    "Microsoft.ManagedIdentity"
+    "Microsoft.ManagedServices"
+)
+
+for provider in "${PROVIDERS[@]}"; do
+    log_verbose "Registering provider: $provider"
+    if [[ "$VERBOSE" == "true" ]]; then
+        az provider register --namespace "$provider"
+    else
+        az provider register --namespace "$provider" >/dev/null 2>&1
+    fi
+    echo "✅ Registered: $provider"
+done
+echo ""
+
 # Step 1: App Registration
 echo "📌 Step 1/4: Creating App Registration..."
 log_verbose "Executing: az ad app create --display-name \"$APP_NAME\""

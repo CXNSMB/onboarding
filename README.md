@@ -66,6 +66,7 @@ The script provides clear feedback and outputs the GitHub Secrets you need:
 - **Service Principal**: Linked to the app registration
 - **Federated Credential**: For GitHub Actions OIDC (passwordless authentication)
 - **RBAC Assignment**: User Access Administrator role with security restrictions
+- **Reader Role**: Assigned to the service principal for basic Azure resource visibility
 
 ## 🔒 Security Features
 
