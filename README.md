@@ -2,6 +2,8 @@
 
 Complete setup for secure GitHub Actions authentication with Azure using OIDC (no secrets needed!).
 
+> 🔧 **Developers**: For development environment setup, see the [`dev` branch](https://github.com/CXNSMB/onboarding/tree/dev) which contains the `.devcontainer` configuration.
+
 ## 🚀 Quick Start
 
 ### Standard Setup (Default Parameters)
