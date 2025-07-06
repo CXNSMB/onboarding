@@ -1,12 +1,23 @@
 #!/bin/bash
 # GitHub Actions Azure OIDC Complete Setup
-# Usage: curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "app-name" "github-org" "github-repo" "branch" [verbose]
+# Usage: curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "app-name" "github-org" "github-repo" "branch" [verbose|management-group] [management-group-name]
 
-# Check for verbose mode
+# Check for verbose mode and management group mode
 VERBOSE=""
-if [[ "$5" == "verbose" || "$5" == "-v" || "$5" == "--verbose" ]]; then
-    VERBOSE="true"
-fi
+MANAGEMENT_GROUP_MODE=""
+MANAGEMENT_GROUP_NAME=""
+
+# Process parameters 5 and 6 for options
+for param in "$5" "$6"; do
+    if [[ "$param" == "verbose" || "$param" == "-v" || "$param" == "--verbose" ]]; then
+        VERBOSE="true"
+    elif [[ "$param" == "management-group" || "$param" == "mg" || "$param" == "--management-group" ]]; then
+        MANAGEMENT_GROUP_MODE="true"
+    elif [[ "$MANAGEMENT_GROUP_MODE" == "true" && ! -z "$param" && "$param" != "verbose" && "$param" != "-v" && "$param" != "--verbose" ]]; then
+        # This is a management group name
+        MANAGEMENT_GROUP_NAME="$param"
+    fi
+done
 
 # Verbose logging function
 log_verbose() {
@@ -37,6 +48,15 @@ echo "   App Name: $APP_NAME"
 echo "   GitHub: $GITHUB_ORG/$GITHUB_REPO (branch: $GITHUB_REF)"
 if [[ "$VERBOSE" == "true" ]]; then
     echo "   Verbose Mode: ENABLED"
+fi
+if [[ "$MANAGEMENT_GROUP_MODE" == "true" ]]; then
+    if [[ ! -z "$MANAGEMENT_GROUP_NAME" ]]; then
+        echo "   Scope: Management Group ($MANAGEMENT_GROUP_NAME)"
+    else
+        echo "   Scope: Management Group (root level)"
+    fi
+else
+    echo "   Scope: Current Subscription"
 fi
 echo ""
 
@@ -294,84 +314,139 @@ echo ""
 # Step 4: RBAC Assignment
 echo "🔓 Step 4/4: Assigning RBAC permissions..."
 
-# Get current subscription
+# Get current subscription and tenant
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 TENANT_ID=$(az account show --query tenantId -o tsv)
 
+# Determine scope
+if [[ "$MANAGEMENT_GROUP_MODE" == "true" ]]; then
+    if [[ ! -z "$MANAGEMENT_GROUP_NAME" ]]; then
+        # Use specified management group name
+        DEFAULT_MG_NAME="$MANAGEMENT_GROUP_NAME"
+        log_verbose "Management Group mode: Using specified '$DEFAULT_MG_NAME' management group"
+        
+        # Check if specified management group exists
+        SPECIFIED_MG_ID=$(az account management-group list --query "[?displayName=='$DEFAULT_MG_NAME'].name | [0]" -o tsv 2>/dev/null)
+        
+        if [ -z "$SPECIFIED_MG_ID" ] || [ "$SPECIFIED_MG_ID" == "null" ]; then
+            echo "📁 Creating '$DEFAULT_MG_NAME' management group..."
+            log_verbose "Management group '$DEFAULT_MG_NAME' not found, creating it"
+            
+            # Create the management group
+            if [[ "$VERBOSE" == "true" ]]; then
+                CREATE_MG_OUTPUT=$(az account management-group create --name "$DEFAULT_MG_NAME" --display-name "$DEFAULT_MG_NAME" 2>&1)
+                CREATE_MG_STATUS=$?
+                echo "🔍 [VERBOSE] Create management group output: $CREATE_MG_OUTPUT"
+            else
+                CREATE_MG_OUTPUT=$(az account management-group create --name "$DEFAULT_MG_NAME" --display-name "$DEFAULT_MG_NAME" 2>/dev/null)
+                CREATE_MG_STATUS=$?
+            fi
+            
+            # Check if creation succeeded or if it already existed
+            if [ $CREATE_MG_STATUS -eq 0 ]; then
+                echo "✅ Management group '$DEFAULT_MG_NAME' created successfully"
+                TARGET_MG_ID="$DEFAULT_MG_NAME"
+            elif [[ "$CREATE_MG_OUTPUT" == *"already exists"* ]] || [[ "$CREATE_MG_OUTPUT" == *"AlreadyExists"* ]]; then
+                echo "✅ Management group '$DEFAULT_MG_NAME' already exists"
+                TARGET_MG_ID="$DEFAULT_MG_NAME"
+                log_verbose "Management group already existed, continuing"
+            else
+                echo "❌ FAILED - Could not create management group '$DEFAULT_MG_NAME'"
+                log_verbose "Management group creation failed: $CREATE_MG_OUTPUT"
+                exit 1
+            fi
+        else
+            echo "✅ Using existing '$DEFAULT_MG_NAME' management group"
+            log_verbose "Found existing management group '$DEFAULT_MG_NAME' with ID: $SPECIFIED_MG_ID"
+            TARGET_MG_ID="$SPECIFIED_MG_ID"
+        fi
+        
+        SCOPE="/providers/Microsoft.Management/managementGroups/$TARGET_MG_ID"
+        SCOPE_NAME="Management Group ($DEFAULT_MG_NAME)"
+    else
+        # Use root management group (no name specified)
+        log_verbose "Management Group mode: Using root management group"
+        
+        # Get the root management group (tenant root group)
+        ROOT_MG_ID=$(az account management-group list --query "[?displayName=='Tenant Root Group' || name=='$TENANT_ID'].name | [0]" -o tsv 2>/dev/null)
+        if [ -z "$ROOT_MG_ID" ] || [ "$ROOT_MG_ID" == "null" ]; then
+            # Fallback: get the first management group the user has access to
+            ROOT_MG_ID=$(az account management-group list --query "[0].name" -o tsv 2>/dev/null)
+            if [ -z "$ROOT_MG_ID" ] || [ "$ROOT_MG_ID" == "null" ]; then
+                echo "❌ FAILED - No management groups found or insufficient permissions"
+                echo "   Falling back to subscription scope..."
+                SCOPE="/subscriptions/$SUBSCRIPTION_ID"
+                SCOPE_NAME="Subscription (fallback)"
+                MANAGEMENT_GROUP_MODE="false"
+            else
+                echo "✅ Using management group: $ROOT_MG_ID"
+                SCOPE="/providers/Microsoft.Management/managementGroups/$ROOT_MG_ID"
+                SCOPE_NAME="Management Group ($ROOT_MG_ID)"
+            fi
+        else
+            echo "✅ Using root management group: $ROOT_MG_ID"
+            SCOPE="/providers/Microsoft.Management/managementGroups/$ROOT_MG_ID"
+            SCOPE_NAME="Root Management Group ($ROOT_MG_ID)"
+        fi
+    fi
+else
+    SCOPE="/subscriptions/$SUBSCRIPTION_ID"
+    SCOPE_NAME="Subscription"
+fi
+
 log_verbose "RBAC Assignment details:"
-log_verbose "  Role 1: User Access Administrator (18d7d88d-d35e-4fb5-a5c3-7773c20a72d9)"
-log_verbose "  Role 2: Reader (acdd72a7-3385-48ef-bd42-f606fba81ae7)"
+log_verbose "  Role: Owner (8e3af657-a8ff-443c-a75c-2fe8c4bcb635)"
 log_verbose "  Assignee: $SP_ID"
-log_verbose "  Scope: /subscriptions/$SUBSCRIPTION_ID"
-log_verbose "  Condition: Blocks Owner, User Access Admin, RBAC Admin assignments (User Access Admin only)"
+log_verbose "  Scope: $SCOPE ($SCOPE_NAME)"
+log_verbose "  Condition: Blocks Owner and RBAC Admin assignments from this service principal"
 
-# Create role assignments
-USER_ACCESS_ADMIN_ROLE="18d7d88d-d35e-4fb5-a5c3-7773c20a72d9"  # User Access Administrator
-READER_ROLE="acdd72a7-3385-48ef-bd42-f606fba81ae7"  # Reader
+# Create role assignment
+OWNER_ROLE="8e3af657-a8ff-443c-a75c-2fe8c4bcb635"  # Owner
 
-# RBAC assignment with security conditions for User Access Administrator
-CONDITION='((!(ActionMatches{'\''Microsoft.Authorization/roleAssignments/write'\''})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAllValues:GuidNotEquals {8e3af657-a8ff-443c-a75c-2fe8c4bcb635, 18d7d88d-d35e-4fb5-a5c3-7773c20a72d9, f58310d9-a9f6-439a-9e8d-f62e7b41a168})) AND ((!(ActionMatches{'\''Microsoft.Authorization/roleAssignments/delete'\''})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAllValues:GuidNotEquals {8e3af657-a8ff-443c-a75c-2fe8c4bcb635, 18d7d88d-d35e-4fb5-a5c3-7773c20a72d9, f58310d9-a9f6-439a-9e8d-f62e7b41a168}))'
+# RBAC assignment with security conditions for Owner role
+CONDITION='((!(ActionMatches{'\''Microsoft.Authorization/roleAssignments/write'\''})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAllValues:GuidNotEquals {8e3af657-a8ff-443c-a75c-2fe8c4bcb635, f58310d9-a9f6-439a-9e8d-f62e7b41a168})) AND ((!(ActionMatches{'\''Microsoft.Authorization/roleAssignments/delete'\''})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAllValues:GuidNotEquals {8e3af657-a8ff-443c-a75c-2fe8c4bcb635, f58310d9-a9f6-439a-9e8d-f62e7b41a168}))'
 
-# Assignment 1: User Access Administrator with conditions
-log_verbose "Creating User Access Administrator role assignment with security conditions..."
+# Assignment: Owner with conditions
+log_verbose "Creating Owner role assignment with security conditions..."
 if [[ "$VERBOSE" == "true" ]]; then
-    echo "🔍 [VERBOSE] Executing User Access Administrator role assignment with conditions..."
+    echo "🔍 [VERBOSE] Executing Owner role assignment with conditions on $SCOPE_NAME..."
     az role assignment create \
       --assignee $SP_ID \
-      --role $USER_ACCESS_ADMIN_ROLE \
-      --scope "/subscriptions/$SUBSCRIPTION_ID" \
-      --description "GitHub Actions service principal - cannot assign/delete Owner, User Access Admin and RBAC Admin roles" \
+      --role $OWNER_ROLE \
+      --scope "$SCOPE" \
+      --description "GitHub Actions service principal - cannot assign/delete Owner and RBAC Admin roles" \
       --condition "$CONDITION" \
       --condition-version "2.0"
     RBAC_CREATE_STATUS=$?
 else
     az role assignment create \
       --assignee $SP_ID \
-      --role $USER_ACCESS_ADMIN_ROLE \
-      --scope "/subscriptions/$SUBSCRIPTION_ID" \
-      --description "GitHub Actions service principal - cannot assign/delete Owner, User Access Admin and RBAC Admin roles" \
+      --role $OWNER_ROLE \
+      --scope "$SCOPE" \
+      --description "GitHub Actions service principal - cannot assign/delete Owner and RBAC Admin roles" \
       --condition "$CONDITION" \
       --condition-version "2.0" >/dev/null 2>&1
     RBAC_CREATE_STATUS=$?
 fi
 
 if [ $RBAC_CREATE_STATUS -ne 0 ]; then
-    echo "❌ FAILED - Could not create User Access Administrator RBAC assignment"
+    echo "❌ FAILED - Could not create Owner RBAC assignment on $SCOPE_NAME"
     log_verbose "Error details: You may need Owner permissions to assign roles with conditions"
-    log_verbose "Alternative: Assign User Access Administrator role manually in Azure Portal"
+    if [[ "$MANAGEMENT_GROUP_MODE" == "true" ]]; then
+        log_verbose "Alternative: Try without management-group mode or assign Owner role manually in Azure Portal"
+    else
+        log_verbose "Alternative: Assign Owner role manually in Azure Portal"
+    fi
     exit 1
 fi
-echo "✅ User Access Administrator role assigned with security restrictions"
-
-# Assignment 2: Reader role (no conditions needed)
-log_verbose "Creating Reader role assignment..."
-if [[ "$VERBOSE" == "true" ]]; then
-    echo "🔍 [VERBOSE] Executing Reader role assignment..."
-    az role assignment create \
-      --assignee $SP_ID \
-      --role $READER_ROLE \
-      --scope "/subscriptions/$SUBSCRIPTION_ID" \
-      --description "GitHub Actions service principal - read access to all resources"
-    READER_CREATE_STATUS=$?
-else
-    az role assignment create \
-      --assignee $SP_ID \
-      --role $READER_ROLE \
-      --scope "/subscriptions/$SUBSCRIPTION_ID" \
-      --description "GitHub Actions service principal - read access to all resources" >/dev/null 2>&1
-    READER_CREATE_STATUS=$?
-fi
-
-if [ $READER_CREATE_STATUS -ne 0 ]; then
-    echo "⚠️  WARNING - Could not create Reader RBAC assignment"
-    log_verbose "Reader role assignment failed, but continuing as this is not critical"
-    log_verbose "You can manually assign the Reader role in Azure Portal if needed"
-else
-    echo "✅ Reader role assigned for subscription-wide read access"
-fi
-log_verbose "Service Principal can now manage most role assignments except dangerous ones"
-log_verbose "Service Principal also has read access to all subscription resources"
+echo "✅ Owner role assigned with security restrictions on $SCOPE_NAME"
+log_verbose "Service Principal has full $SCOPE_NAME access except cannot assign/delete Owner and RBAC Admin roles"
 echo ""
+
+
+
+
+
 
 echo "🎉 SETUP COMPLETED SUCCESSFULLY!"
 echo "================================="
@@ -392,10 +467,10 @@ if [[ "$VERBOSE" == "true" ]]; then
     echo "   - App Registration ID: $APP_ID"
     echo "   - Service Principal ID: $SP_ID" 
     echo "   - Federated Credential Subject: repo:$GITHUB_ORG/$GITHUB_REPO:ref:refs/heads/$GITHUB_REF"
-    echo "   - RBAC Roles: User Access Administrator + Reader"
-    echo "   - User Access Admin GUID: 18d7d88d-d35e-4fb5-a5c3-7773c20a72d9"
-    echo "   - Reader GUID: acdd72a7-3385-48ef-bd42-f606fba81ae7"
-    echo "   - Security Condition: Blocks Owner/User Access Admin/RBAC Admin role assignments"
+    echo "   - RBAC Role: Owner (with security restrictions)"
+    echo "   - RBAC Scope: $SCOPE_NAME"
+    echo "   - Owner GUID: 8e3af657-a8ff-443c-a75c-2fe8c4bcb635"
+    echo "   - Security Condition: Blocks Owner/RBAC Admin role assignments"
     echo ""
     echo "🆘 If you encounter issues:"
     echo "   1. Azure CLI JSON errors: Try 'az cache purge' and 'az upgrade'"
@@ -407,12 +482,10 @@ fi
 
 echo "🔒 Security: Service Principal CANNOT assign these roles:"
 echo "   ❌ Owner (8e3af657-a8ff-443c-a75c-2fe8c4bcb635)"
-echo "   ❌ User Access Administrator (18d7d88d-d35e-4fb5-a5c3-7773c20a72d9)"
 echo "   ❌ RBAC Administrator (f58310d9-a9f6-439a-9e8d-f62e7b41a168)"
 echo ""
-echo "✅ Service Principal HAS these roles:"
-echo "   ✅ User Access Administrator (with security restrictions)"
-echo "   ✅ Reader (subscription-wide read access)"
+echo "✅ Service Principal HAS this role:"
+echo "   ✅ Owner (with security restrictions - cannot assign/delete Owner and RBAC Admin roles)"
 echo ""
 
 if [[ "$VERBOSE" == "true" ]]; then
@@ -420,7 +493,8 @@ if [[ "$VERBOSE" == "true" ]]; then
     echo "🔍 [VERBOSE]   App Registration: $APP_NAME (ID: $APP_ID)"
     echo "🔍 [VERBOSE]   Service Principal: $SP_ID"
     echo "🔍 [VERBOSE]   Federated Credential: $CREDENTIAL_NAME"
-    echo "🔍 [VERBOSE]   RBAC Roles: User Access Administrator (with conditions) + Reader"
+    echo "🔍 [VERBOSE]   RBAC Role: Owner (with security conditions)"
+    echo "🔍 [VERBOSE]   RBAC Scope: $SCOPE_NAME"
     echo "🔍 [VERBOSE]   Subscription: $SUBSCRIPTION_ID"
     echo "🔍 [VERBOSE]   Tenant: $TENANT_ID"
     echo ""

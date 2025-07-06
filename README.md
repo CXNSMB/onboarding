@@ -46,12 +46,46 @@ curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-regis
 curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "YourApp-GitHub" "your-org" "your-repo" "main" verbose
 ```
 
-Verbose mode provides:
+### 🏢 Management Group Scope
+
+**Standard with management group scope (root level access):**
+
+```bash
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "" "" "" "" management-group
+```
+
+**Custom management group name:**
+
+```bash
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "YourApp-GitHub" "your-org" "your-repo" "main" management-group "CXNSMB"
+```
+
+**Root management group with verbose:**
+
+```bash
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "YourApp-GitHub" "your-org" "your-repo" "main" management-group verbose
+```
+
+**Custom management group with verbose:**
+
+```bash
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "YourApp-GitHub" "your-org" "your-repo" "main" management-group "MyCompany" verbose
+```
+
+**Verbose mode provides:**
 - ✅ Detailed step-by-step execution logs
 - ✅ Current Azure context information  
 - ✅ Command-by-command output
 - ✅ Error troubleshooting details
 - ✅ Complete resource summary
+
+**Management group mode provides:**
+- ✅ Owner role assignment at the specified management group level (or root if none specified)
+- ✅ Access to all subscriptions within the target management group
+- ✅ Perfect for enterprise-wide Azure governance
+- ✅ Automatic creation of named management groups if they don't exist
+- ✅ Fallback to root management group when no name is specified
+- ⚠️ Requires management group permissions to assign roles
 
 ## 📋 Prerequisites
 
@@ -63,8 +97,7 @@ Verbose mode provides:
 - ✅ Create App Registration
 - ✅ Create Service Principal  
 - ✅ Setup Federated Credential (OIDC)
-- ✅ Assign User Access Administrator role (with security restrictions)
-- ✅ Assign Reader role (subscription-wide read access)
+- ✅ Assign Owner role (with security restrictions to prevent dangerous role assignments)
 
 ## 📋 Output
 
@@ -81,12 +114,10 @@ The script provides clear feedback and outputs the GitHub Secrets you need:
 
 🔒 Security: Service Principal CANNOT assign these roles:
    ❌ Owner (8e3af657-a8ff-443c-a75c-2fe8c4bcb635)
-   ❌ User Access Administrator (18d7d88d-d35e-4fb5-a5c3-7773c20a72d9)
    ❌ RBAC Administrator (f58310d9-a9f6-439a-9e8d-f62e7b41a168)
 
-✅ Service Principal HAS these roles:
-   ✅ User Access Administrator (with security restrictions)
-   ✅ Reader (subscription-wide read access)
+✅ Service Principal HAS this role:
+   ✅ Owner (with security restrictions - cannot assign/delete Owner and RBAC Admin roles)
 
 ✅ Ready for GitHub Actions!
 ```
@@ -96,26 +127,56 @@ The script provides clear feedback and outputs the GitHub Secrets you need:
 - **App Registration**: `CXNSMB-github-lighthouse` (default) or your custom name
 - **Service Principal**: Linked to the app registration
 - **Federated Credential**: For GitHub Actions OIDC (passwordless authentication)
-- **User Access Administrator Role**: With security restrictions to prevent dangerous role assignments
-- **Reader Role**: Subscription-wide read access for monitoring and reporting
+- **Owner Role**: With security restrictions to prevent dangerous role assignments while providing full Azure access
 
 ## 🔒 Security Features
 
-The script assigns **two RBAC roles** with different security levels:
+The script assigns the **Owner role** with security restrictions using Azure RBAC conditions:
 
-### User Access Administrator (Restricted)
-- ✅ Can assign most Azure roles
-- ❌ **Cannot** assign Owner role
-- ❌ **Cannot** assign User Access Administrator role  
-- ❌ **Cannot** assign RBAC Administrator role
+### Owner (Restricted)
+- ✅ Full access to all Azure resources and services
+- ✅ Can manage subscriptions, resource groups, and all resources
+- ✅ Can assign most Azure roles to other users and service principals
+- ✅ Perfect for comprehensive Azure management and deployments
+- ❌ **Cannot** assign Owner role to anyone (including itself)
+- ❌ **Cannot** assign RBAC Administrator role to anyone
+- ❌ **Cannot** delete existing Owner or RBAC Administrator role assignments
 - 🔒 Protected by Azure RBAC conditions
 
-### Reader (Unrestricted)
-- ✅ Can read all subscription resources
-- ✅ Perfect for monitoring and cost analysis
-- ✅ No modification rights
+This approach provides maximum Azure access for deployments and management while preventing the service principal from escalating privileges to the most dangerous roles.
 
-This dual-role approach provides maximum flexibility while maintaining security.
+## 🎯 Scope Options
+
+The script supports two different scope levels for role assignment:
+
+### Subscription Scope (Default)
+- ✅ Owner role assigned to the current subscription only
+- ✅ Perfect for single-subscription projects
+- ✅ Requires subscription-level Owner permissions
+- ✅ Simpler setup and management
+
+### Management Group Scope
+- ✅ Owner role assigned at the specified management group level (or root level if no name provided)
+- ✅ Access to **all subscriptions** within the target management group
+- ✅ Perfect for enterprise-wide Azure governance and multi-subscription deployments
+- ✅ Enables cross-subscription resource management
+- ✅ Automatically creates named management groups if they don't exist
+- ✅ Defaults to root management group when no name is specified
+- ⚠️ Requires management group-level Owner permissions
+- ⚠️ Broad access scope - use with caution
+
+**When to use Management Group scope:**
+- Multi-subscription enterprise environments
+- Cross-subscription resource deployments
+- Azure landing zone implementations
+- Enterprise governance scenarios
+- When you need tenant-wide access
+
+**When to use Subscription scope:**
+- Single subscription projects
+- Development/testing environments
+- When you want to limit blast radius
+- Simpler permission model
 
 ## ⚙️ Parameters
 
@@ -126,6 +187,8 @@ This dual-role approach provides maximum flexibility while maintaining security.
 | `githubRepo` | `azlighthouse` | GitHub repository name |
 | `githubRef` | `main` | GitHub branch/environment |
 | `verbose` | (none) | Add `verbose` for detailed logging |
+| `management-group` | (none) | Add `management-group` for management group scope |
+| `management-group-name` | (root) | Optional: Specify management group name (creates if needed) |
 
 ## 💡 Usage Examples
 
@@ -144,28 +207,27 @@ curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-regis
 curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp" "CXNSMB" "my-repo"
 ```
 
+**Management group scope (enterprise-wide access):**
+```bash
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp" "CXNSMB" "my-repo" "main" management-group
+```
+
+**Specific management group (CXNSMB):**
+```bash
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp" "CXNSMB" "my-repo" "main" management-group "CXNSMB"
+```
+
 **Completely custom with verbose:**
 ```bash
 curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp" "my-org" "my-repo" "develop" verbose
 ```
 
-## 🔧 Alternative: Full CLI Deployment
-
-If you prefer to do everything via CLI, you can still use the original Bicep template:
-
+**Enterprise setup with custom management group and verbose:**
 ```bash
-# Clone the repository
-git clone https://github.com/CXNSMB/onboarding.git
-cd onboarding
-
-# Deploy with Azure CLI
-az deployment sub create \
-  --location westeurope \
-  --template-file onboarding.bicep \
-  --parameters appName='your-app-name' githubOrg='your-org' githubRepo='your-repo'
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp" "my-org" "my-repo" "main" management-group "MyCompany" verbose
 ```
 
-## 📖 GitHub Actions Setup
+##  GitHub Actions Setup
 
 After deployment, use these values in your GitHub Actions:
 
