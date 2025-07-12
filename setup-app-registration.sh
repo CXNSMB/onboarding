@@ -1,6 +1,7 @@
 #!/bin/bash
 # GitHub Actions Azure OIDC Complete Setup
-# Usage: curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/dev/setup-app-registration.sh | bash -s -- "app-name" "github-org" "github-repo" "branch" [verbose|management-group] [management-group-name]
+# Usage: curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "app-name" "github-org" "github-repo" "branch" [verbose|management-group] [management-group-name]
+# For dev version: curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/dev/setup-app-registration.sh | bash -s -- "app-name" "github-org" "github-repo" "branch" [verbose|management-group] [management-group-name]
 
 # Check for verbose mode and management group mode
 VERBOSE=""
