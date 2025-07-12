@@ -6,16 +6,16 @@ Complete setup for secure GitHub Actions authentication with Azure using OIDC (n
 
 ### Standard Setup (Default Parameters)
 
-**For CXNSMB/azlighthouse repository:**
+**For CXNSMB/solution-onboarding repository:**
 
 ```bash
 curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash
 ```
 
 This uses the default parameters:
-- App Name: `CXNSMB-github-lighthouse`
+- App Name: `CXNSMB-github-solution-onboarding`
 - GitHub Org: `CXNSMB`
-- GitHub Repo: `azlighthouse`
+- GitHub Repo: `solution-onboarding`
 - Branch: `main`
 
 ### Custom Setup
@@ -97,6 +97,7 @@ curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-regis
 - ✅ Create App Registration
 - ✅ Create Service Principal  
 - ✅ Setup Federated Credential (OIDC)
+- ✅ Assign Microsoft Graph API permissions (Application.ReadWrite.All + Directory.ReadWrite.All)
 - ✅ Assign Owner role (with security restrictions to prevent dangerous role assignments)
 
 ## 📋 Output
@@ -116,17 +117,20 @@ The script provides clear feedback and outputs the GitHub Secrets you need:
    ❌ Owner (8e3af657-a8ff-443c-a75c-2fe8c4bcb635)
    ❌ RBAC Administrator (f58310d9-a9f6-439a-9e8d-f62e7b41a168)
 
-✅ Service Principal HAS this role:
+✅ Service Principal HAS these roles:
    ✅ Owner (with security restrictions - cannot assign/delete Owner and RBAC Admin roles)
+   ✅ Application.ReadWrite.All (Microsoft Graph API permission for app management)
+   ✅ Directory.ReadWrite.All (Microsoft Graph API permission for directory operations)
 
 ✅ Ready for GitHub Actions!
 ```
 
 ## 📋 What gets created?
 
-- **App Registration**: `CXNSMB-github-lighthouse` (default) or your custom name
+- **App Registration**: `CXNSMB-github-solution-onboarding` (default) or your custom name
 - **Service Principal**: Linked to the app registration
 - **Federated Credential**: For GitHub Actions OIDC (passwordless authentication)
+- **Microsoft Graph API Permissions**: Application.ReadWrite.All and Directory.ReadWrite.All for app management
 - **Owner Role**: With security restrictions to prevent dangerous role assignments while providing full Azure access
 
 ## 🔒 Security Features
@@ -144,6 +148,29 @@ The script assigns the **Owner role** with security restrictions using Azure RBA
 - 🔒 Protected by Azure RBAC conditions
 
 This approach provides maximum Azure access for deployments and management while preventing the service principal from escalating privileges to the most dangerous roles.
+
+## 🔑 Microsoft Graph API Permissions
+
+In addition to Azure RBAC roles, the script assigns Microsoft Graph API permissions for enhanced functionality:
+
+### Application.ReadWrite.All
+- ✅ Can create and manage all aspects of app registrations
+- ✅ Can manage enterprise applications and service principals
+- ✅ Can manage application proxy and federated credentials
+- ✅ Perfect for automated application lifecycle management
+- ✅ Required for managing OIDC configurations in CI/CD
+
+### Directory.ReadWrite.All
+- ✅ Can write directory objects (users, groups, applications)
+- ✅ Can update directory properties and attributes
+- ✅ Enables advanced Azure AD automation scenarios
+- ✅ Supports identity and access management workflows
+
+**Why these permissions are needed:**
+- GitHub Actions workflows often need to manage app registrations
+- Automated deployment scenarios may require directory object creation
+- Enterprise environments benefit from programmatic Azure AD management
+- Reduces manual intervention in identity management processes
 
 ## 🎯 Scope Options
 
@@ -182,9 +209,9 @@ The script supports two different scope levels for role assignment:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `appName` | `CXNSMB-github-lighthouse` | Name of the App Registration |
+| `appName` | `CXNSMB-github-solution-onboarding` | Name of the App Registration |
 | `githubOrg` | `CXNSMB` | GitHub organization name |
-| `githubRepo` | `azlighthouse` | GitHub repository name |
+| `githubRepo` | `solution-onboarding` | GitHub repository name |
 | `githubRef` | `main` | GitHub branch/environment |
 | `verbose` | (none) | Add `verbose` for detailed logging |
 | `management-group` | (none) | Add `management-group` for management group scope |
@@ -192,12 +219,12 @@ The script supports two different scope levels for role assignment:
 
 ## 💡 Usage Examples
 
-**Most common - CXNSMB azlighthouse repo:**
+**Most common - CXNSMB solution-onboarding repo:**
 ```bash
 curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash
 ```
 
-**Different app name for CXNSMB/azlighthouse:**
+**Different app name for CXNSMB/solution-onboarding:**
 ```bash
 curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyProject-GitHub"
 ```
