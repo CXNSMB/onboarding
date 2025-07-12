@@ -1,6 +1,7 @@
 #!/bin/bash
 # GitHub Actions Azure OIDC Complete Setup
 # Usage: curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "app-name" "github-org" "github-repo" "branch" [verbose|management-group] [management-group-name]
+# For dev version: curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/dev/setup-app-registration.sh | bash -s -- "app-name" "github-org" "github-repo" "branch" [verbose|management-group] [management-group-name]
 
 # Check for verbose mode and management group mode
 VERBOSE=""
@@ -38,9 +39,9 @@ if ! az account show >/dev/null 2>&1; then
 fi
 
 # Parameters
-APP_NAME="${1:-CXNSMB-github-lighthouse}"
+APP_NAME="${1:-CXNSMB-github-solution-onboarding}"
 GITHUB_ORG="${2:-CXNSMB}"
-GITHUB_REPO="${3:-azlighthouse}"
+GITHUB_REPO="${3:-solution-onboarding}"
 GITHUB_REF="${4:-main}"
 
 echo "📋 Configuration:"
@@ -252,8 +253,170 @@ fi
 log_verbose "Service Principal readiness wait completed"
 echo ""
 
-# Step 3: Federated Credential
-echo "🔐 Step 3/4: Creating Federated Credential..."
+# Step 3: Azure AD Directory Permissions
+echo "🔑 Step 3/5: Assigning Azure AD Directory Permissions..."
+log_verbose "Adding Microsoft Graph API permissions to app registration"
+
+# Get Microsoft Graph App ID (not Service Principal ID)
+log_verbose "Getting Microsoft Graph App ID..."
+GRAPH_APP_ID="00000003-0000-0000-c000-000000000000"  # Well-known Microsoft Graph App ID
+
+if [ ! -z "$GRAPH_APP_ID" ]; then
+    log_verbose "Microsoft Graph App ID: $GRAPH_APP_ID"
+    
+    # Application Administrator permission: Application.ReadWrite.All
+    APPLICATION_READWRITE_ALL="1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9"
+    
+    # Directory Writers permission: Directory.ReadWrite.All  
+    DIRECTORY_READWRITE_ALL="19dbc75e-c2e2-444c-a770-ec69d8559fc7"
+    
+    echo "📝 Adding Microsoft Graph API permissions..."
+    
+    # Add Application.ReadWrite.All permission
+    log_verbose "Adding Application.ReadWrite.All permission..."
+    if [[ "$VERBOSE" == "true" ]]; then
+        echo "🔍 [VERBOSE] Executing: az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $APPLICATION_READWRITE_ALL=Role"
+        APP_PERM_OUTPUT=$(az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $APPLICATION_READWRITE_ALL=Role 2>&1)
+        APP_PERM_STATUS=$?
+        echo "🔍 [VERBOSE] Application permission output: $APP_PERM_OUTPUT"
+    else
+        APP_PERM_OUTPUT=$(az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $APPLICATION_READWRITE_ALL=Role 2>&1)
+        APP_PERM_STATUS=$?
+    fi
+    
+    if [ $APP_PERM_STATUS -eq 0 ]; then
+        echo "✅ Application.ReadWrite.All permission added"
+        log_verbose "Service Principal can now manage application registrations"
+    elif [[ "$APP_PERM_OUTPUT" == *"already exists"* ]] || [[ "$APP_PERM_OUTPUT" == *"Conflict"* ]]; then
+        echo "✅ Application.ReadWrite.All permission already exists"
+        log_verbose "Application permission already configured"
+    else
+        echo "⚠️  WARNING - Could not add Application.ReadWrite.All permission"
+        log_verbose "Error: $APP_PERM_OUTPUT"
+    fi
+    
+    # Add Directory.ReadWrite.All permission
+    log_verbose "Adding Directory.ReadWrite.All permission..."
+    if [[ "$VERBOSE" == "true" ]]; then
+        echo "🔍 [VERBOSE] Executing: az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $DIRECTORY_READWRITE_ALL=Role"
+        DIR_PERM_OUTPUT=$(az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $DIRECTORY_READWRITE_ALL=Role 2>&1)
+        DIR_PERM_STATUS=$?
+        echo "🔍 [VERBOSE] Directory permission output: $DIR_PERM_OUTPUT"
+    else
+        DIR_PERM_OUTPUT=$(az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $DIRECTORY_READWRITE_ALL=Role 2>&1)
+        DIR_PERM_STATUS=$?
+    fi
+    
+    if [ $DIR_PERM_STATUS -eq 0 ]; then
+        echo "✅ Directory.ReadWrite.All permission added"
+        log_verbose "Service Principal can now write directory objects"
+    elif [[ "$DIR_PERM_OUTPUT" == *"already exists"* ]] || [[ "$DIR_PERM_OUTPUT" == *"Conflict"* ]]; then
+        echo "✅ Directory.ReadWrite.All permission already exists"
+        log_verbose "Directory permission already configured"
+    else
+        echo "⚠️  WARNING - Could not add Directory.ReadWrite.All permission"
+        log_verbose "Error: $DIR_PERM_OUTPUT"
+    fi
+    
+    # Grant admin consent for the permissions using REST API
+    echo "🔐 Granting admin consent for permissions..."
+    log_verbose "Granting admin consent for Microsoft Graph app permissions via REST API..."
+    
+    # Get the Service Principal ID for Microsoft Graph
+    GRAPH_SP_ID=$(az ad sp list --filter "appId eq '$GRAPH_APP_ID'" --query "[0].id" -o tsv 2>/dev/null)
+    
+    if [ ! -z "$GRAPH_SP_ID" ]; then
+        log_verbose "Microsoft Graph Service Principal ID: $GRAPH_SP_ID"
+        
+        # Grant admin consent for Application.ReadWrite.All (app permission)
+        log_verbose "Granting admin consent for Application.ReadWrite.All app permission..."
+        if [[ "$VERBOSE" == "true" ]]; then
+            echo "🔍 [VERBOSE] Creating app role assignment for Application.ReadWrite.All..."
+            APP_CONSENT_OUTPUT=$(az rest --method POST \
+                --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignments" \
+                --body "{\"principalId\":\"$SP_ID\",\"resourceId\":\"$GRAPH_SP_ID\",\"appRoleId\":\"$APPLICATION_READWRITE_ALL\"}" \
+                --headers "Content-Type=application/json" 2>&1)
+            APP_CONSENT_STATUS=$?
+            echo "🔍 [VERBOSE] Application consent output: $APP_CONSENT_OUTPUT"
+        else
+            APP_CONSENT_OUTPUT=$(az rest --method POST \
+                --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignments" \
+                --body "{\"principalId\":\"$SP_ID\",\"resourceId\":\"$GRAPH_SP_ID\",\"appRoleId\":\"$APPLICATION_READWRITE_ALL\"}" \
+                --headers "Content-Type=application/json" 2>/dev/null)
+            APP_CONSENT_STATUS=$?
+        fi
+        
+        # Grant admin consent for Directory.ReadWrite.All (app permission)
+        log_verbose "Granting admin consent for Directory.ReadWrite.All app permission..."
+        if [[ "$VERBOSE" == "true" ]]; then
+            echo "🔍 [VERBOSE] Creating app role assignment for Directory.ReadWrite.All..."
+            DIR_CONSENT_OUTPUT=$(az rest --method POST \
+                --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignments" \
+                --body "{\"principalId\":\"$SP_ID\",\"resourceId\":\"$GRAPH_SP_ID\",\"appRoleId\":\"$DIRECTORY_READWRITE_ALL\"}" \
+                --headers "Content-Type=application/json" 2>&1)
+            DIR_CONSENT_STATUS=$?
+            echo "🔍 [VERBOSE] Directory consent output: $DIR_CONSENT_OUTPUT"
+        else
+            DIR_CONSENT_OUTPUT=$(az rest --method POST \
+                --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignments" \
+                --body "{\"principalId\":\"$SP_ID\",\"resourceId\":\"$GRAPH_SP_ID\",\"appRoleId\":\"$DIRECTORY_READWRITE_ALL\"}" \
+                --headers "Content-Type=application/json" 2>/dev/null)
+            DIR_CONSENT_STATUS=$?
+        fi
+        
+        # Check results
+        CONSENT_SUCCESS=0
+        if [ $APP_CONSENT_STATUS -eq 0 ]; then
+            echo "✅ Admin consent granted for Application.ReadWrite.All"
+            log_verbose "Application.ReadWrite.All app permission is now consented"
+        elif [[ "$APP_CONSENT_OUTPUT" == *"already exists"* ]] || [[ "$APP_CONSENT_OUTPUT" == *"Conflict"* ]]; then
+            echo "✅ Application.ReadWrite.All already consented"
+            log_verbose "Application permission was already consented"
+        else
+            echo "⚠️  WARNING - Could not grant consent for Application.ReadWrite.All"
+            log_verbose "Application consent failed: $APP_CONSENT_OUTPUT"
+            CONSENT_SUCCESS=1
+        fi
+        
+        if [ $DIR_CONSENT_STATUS -eq 0 ]; then
+            echo "✅ Admin consent granted for Directory.ReadWrite.All"
+            log_verbose "Directory.ReadWrite.All app permission is now consented"
+        elif [[ "$DIR_CONSENT_OUTPUT" == *"already exists"* ]] || [[ "$DIR_CONSENT_OUTPUT" == *"Conflict"* ]]; then
+            echo "✅ Directory.ReadWrite.All already consented"
+            log_verbose "Directory permission was already consented"
+        else
+            echo "⚠️  WARNING - Could not grant consent for Directory.ReadWrite.All"
+            log_verbose "Directory consent failed: $DIR_CONSENT_OUTPUT"
+            CONSENT_SUCCESS=1
+        fi
+        
+        if [ $CONSENT_SUCCESS -eq 0 ]; then
+            echo "✅ Admin consent granted for Microsoft Graph app permissions"
+            log_verbose "All app permissions are now active and usable"
+        else
+            echo "⚠️  WARNING - Some app permissions could not be consented automatically"
+            echo "   📝 Please grant admin consent manually in Azure Portal:"
+            echo "   📝 Azure AD > App registrations > $APP_NAME > API permissions > Grant admin consent"
+        fi
+    else
+        echo "⚠️  WARNING - Could not find Microsoft Graph Service Principal"
+        echo "   📝 Please add Microsoft Graph permissions manually in Azure Portal:"
+        echo "   📝 Azure AD > App registrations > $APP_NAME > API permissions"
+        echo "   📝 Add: Application.ReadWrite.All and Directory.ReadWrite.All (Application permissions)"
+    fi
+    
+else
+    echo "⚠️  WARNING - Could not find Microsoft Graph Service Principal"
+    echo "   📝 Please add Microsoft Graph permissions manually in Azure Portal:"
+    echo "   📝 Azure AD > App registrations > $APP_NAME > API permissions"
+    echo "   📝 Add: Application.ReadWrite.All and Directory.ReadWrite.All (Application permissions)"
+fi
+
+log_verbose "Azure AD directory permissions assignment completed"
+echo ""
+
+# Step 4: Federated Credential
+echo "🔐 Step 4/5: Creating Federated Credential..."
 SUBJECT="repo:$GITHUB_ORG/$GITHUB_REPO:ref:refs/heads/$GITHUB_REF"
 CREDENTIAL_NAME="github-$GITHUB_REPO-$GITHUB_REF"
 
@@ -311,8 +474,8 @@ fi
 log_verbose "GitHub Actions can now authenticate without secrets using OIDC"
 echo ""
 
-# Step 4: RBAC Assignment
-echo "🔓 Step 4/4: Assigning RBAC permissions..."
+# Step 5: RBAC Assignment
+echo "🔓 Step 5/5: Assigning RBAC permissions..."
 
 # Get current subscription and tenant
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
@@ -467,7 +630,8 @@ if [[ "$VERBOSE" == "true" ]]; then
     echo "   - App Registration ID: $APP_ID"
     echo "   - Service Principal ID: $SP_ID" 
     echo "   - Federated Credential Subject: repo:$GITHUB_ORG/$GITHUB_REPO:ref:refs/heads/$GITHUB_REF"
-    echo "   - RBAC Role: Owner (with security restrictions)"
+    echo "   - RBAC Roles: Owner (with security restrictions) + Azure AD roles"
+    echo "   - Azure AD Permissions: Microsoft Graph API permissions"
     echo "   - RBAC Scope: $SCOPE_NAME"
     echo "   - Owner GUID: 8e3af657-a8ff-443c-a75c-2fe8c4bcb635"
     echo "   - Security Condition: Blocks Owner/RBAC Admin role assignments"
@@ -484,8 +648,10 @@ echo "🔒 Security: Service Principal CANNOT assign these roles:"
 echo "   ❌ Owner (8e3af657-a8ff-443c-a75c-2fe8c4bcb635)"
 echo "   ❌ RBAC Administrator (f58310d9-a9f6-439a-9e8d-f62e7b41a168)"
 echo ""
-echo "✅ Service Principal HAS this role:"
+echo "✅ Service Principal HAS these roles:"
 echo "   ✅ Owner (with security restrictions - cannot assign/delete Owner and RBAC Admin roles)"
+echo "   ✅ Application.ReadWrite.All (Microsoft Graph API permission for app management)"
+echo "   ✅ Directory.ReadWrite.All (Microsoft Graph API permission for directory operations)"
 echo ""
 
 if [[ "$VERBOSE" == "true" ]]; then
@@ -494,6 +660,7 @@ if [[ "$VERBOSE" == "true" ]]; then
     echo "🔍 [VERBOSE]   Service Principal: $SP_ID"
     echo "🔍 [VERBOSE]   Federated Credential: $CREDENTIAL_NAME"
     echo "🔍 [VERBOSE]   RBAC Role: Owner (with security conditions)"
+    echo "🔍 [VERBOSE]   Azure AD Permissions: Microsoft Graph API permissions"
     echo "🔍 [VERBOSE]   RBAC Scope: $SCOPE_NAME"
     echo "🔍 [VERBOSE]   Subscription: $SUBSCRIPTION_ID"
     echo "🔍 [VERBOSE]   Tenant: $TENANT_ID"
