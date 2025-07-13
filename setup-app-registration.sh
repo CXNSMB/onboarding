@@ -264,152 +264,134 @@ GRAPH_APP_ID="00000003-0000-0000-c000-000000000000"  # Well-known Microsoft Grap
 if [ ! -z "$GRAPH_APP_ID" ]; then
     log_verbose "Microsoft Graph App ID: $GRAPH_APP_ID"
     
-    # Application Administrator permission: Application.ReadWrite.All
-    APPLICATION_READWRITE_ALL="1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9"
-    
-    # Directory Writers permission: Directory.ReadWrite.All  
-    DIRECTORY_READWRITE_ALL="19dbc75e-c2e2-444c-a770-ec69d8559fc7"
+    # Define required Microsoft Graph API permissions by name
+    REQUIRED_PERMISSIONS=(
+        "Application.ReadWrite.All"    # Application Administrator permission
+        "Directory.ReadWrite.All"      # Directory Writers permission
+        "AppRoleAssignment.ReadWrite.All"
+    )
     
     echo "📝 Adding Microsoft Graph API permissions..."
+    log_verbose "Looking up permission IDs for: ${REQUIRED_PERMISSIONS[*]}"
     
-    # Add Application.ReadWrite.All permission
-    log_verbose "Adding Application.ReadWrite.All permission..."
-    if [[ "$VERBOSE" == "true" ]]; then
-        echo "🔍 [VERBOSE] Executing: az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $APPLICATION_READWRITE_ALL=Role"
-        APP_PERM_OUTPUT=$(az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $APPLICATION_READWRITE_ALL=Role 2>&1)
-        APP_PERM_STATUS=$?
-        echo "🔍 [VERBOSE] Application permission output: $APP_PERM_OUTPUT"
+    # Get Microsoft Graph Service Principal to lookup permission IDs
+    log_verbose "Retrieving Microsoft Graph Service Principal information..."
+    GRAPH_SP_ID=$(az ad sp show --id $GRAPH_APP_ID --query "id" -o tsv 2>/dev/null)
+    if [ -z "$GRAPH_SP_ID" ]; then
+        echo "⚠️  WARNING - Could not retrieve Microsoft Graph Service Principal information"
+        echo "   📝 Please add Microsoft Graph permissions manually in Azure Portal"
     else
-        APP_PERM_OUTPUT=$(az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $APPLICATION_READWRITE_ALL=Role 2>&1)
-        APP_PERM_STATUS=$?
-    fi
-    
-    if [ $APP_PERM_STATUS -eq 0 ]; then
-        echo "✅ Application.ReadWrite.All permission added"
-        log_verbose "Service Principal can now manage application registrations"
-    elif [[ "$APP_PERM_OUTPUT" == *"already exists"* ]] || [[ "$APP_PERM_OUTPUT" == *"Conflict"* ]]; then
-        echo "✅ Application.ReadWrite.All permission already exists"
-        log_verbose "Application permission already configured"
-    else
-        echo "⚠️  WARNING - Could not add Application.ReadWrite.All permission"
-        log_verbose "Error: $APP_PERM_OUTPUT"
-    fi
-    
-    # Add Directory.ReadWrite.All permission
-    log_verbose "Adding Directory.ReadWrite.All permission..."
-    if [[ "$VERBOSE" == "true" ]]; then
-        echo "🔍 [VERBOSE] Executing: az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $DIRECTORY_READWRITE_ALL=Role"
-        DIR_PERM_OUTPUT=$(az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $DIRECTORY_READWRITE_ALL=Role 2>&1)
-        DIR_PERM_STATUS=$?
-        echo "🔍 [VERBOSE] Directory permission output: $DIR_PERM_OUTPUT"
-    else
-        DIR_PERM_OUTPUT=$(az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $DIRECTORY_READWRITE_ALL=Role 2>&1)
-        DIR_PERM_STATUS=$?
-    fi
-    
-    if [ $DIR_PERM_STATUS -eq 0 ]; then
-        echo "✅ Directory.ReadWrite.All permission added"
-        log_verbose "Service Principal can now write directory objects"
-    elif [[ "$DIR_PERM_OUTPUT" == *"already exists"* ]] || [[ "$DIR_PERM_OUTPUT" == *"Conflict"* ]]; then
-        echo "✅ Directory.ReadWrite.All permission already exists"
-        log_verbose "Directory permission already configured"
-    else
-        echo "⚠️  WARNING - Could not add Directory.ReadWrite.All permission"
-        log_verbose "Error: $DIR_PERM_OUTPUT"
-    fi
-    
-    # Grant admin consent for the permissions using REST API
-    echo "🔐 Granting admin consent for permissions..."
-    log_verbose "Granting admin consent for Microsoft Graph app permissions via REST API..."
-    
-    # Get the Service Principal ID for Microsoft Graph
-    GRAPH_SP_ID=$(az ad sp list --filter "appId eq '$GRAPH_APP_ID'" --query "[0].id" -o tsv 2>/dev/null)
-    
-    if [ ! -z "$GRAPH_SP_ID" ]; then
         log_verbose "Microsoft Graph Service Principal ID: $GRAPH_SP_ID"
         
-        # Grant admin consent for Application.ReadWrite.All (app permission)
-        log_verbose "Granting admin consent for Application.ReadWrite.All app permission..."
-        if [[ "$VERBOSE" == "true" ]]; then
-            echo "🔍 [VERBOSE] Creating app role assignment for Application.ReadWrite.All..."
-            APP_CONSENT_OUTPUT=$(az rest --method POST \
-                --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignments" \
-                --body "{\"principalId\":\"$SP_ID\",\"resourceId\":\"$GRAPH_SP_ID\",\"appRoleId\":\"$APPLICATION_READWRITE_ALL\"}" \
-                --headers "Content-Type=application/json" 2>&1)
-            APP_CONSENT_STATUS=$?
-            echo "🔍 [VERBOSE] Application consent output: $APP_CONSENT_OUTPUT"
-        else
-            APP_CONSENT_OUTPUT=$(az rest --method POST \
-                --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignments" \
-                --body "{\"principalId\":\"$SP_ID\",\"resourceId\":\"$GRAPH_SP_ID\",\"appRoleId\":\"$APPLICATION_READWRITE_ALL\"}" \
-                --headers "Content-Type=application/json" 2>/dev/null)
-            APP_CONSENT_STATUS=$?
-        fi
+        # Process each required permission
+        PERMISSION_IDS=()
+        PERMISSION_NAMES=()
         
-        # Grant admin consent for Directory.ReadWrite.All (app permission)
-        log_verbose "Granting admin consent for Directory.ReadWrite.All app permission..."
-        if [[ "$VERBOSE" == "true" ]]; then
-            echo "🔍 [VERBOSE] Creating app role assignment for Directory.ReadWrite.All..."
-            DIR_CONSENT_OUTPUT=$(az rest --method POST \
-                --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignments" \
-                --body "{\"principalId\":\"$SP_ID\",\"resourceId\":\"$GRAPH_SP_ID\",\"appRoleId\":\"$DIRECTORY_READWRITE_ALL\"}" \
-                --headers "Content-Type=application/json" 2>&1)
-            DIR_CONSENT_STATUS=$?
-            echo "🔍 [VERBOSE] Directory consent output: $DIR_CONSENT_OUTPUT"
-        else
-            DIR_CONSENT_OUTPUT=$(az rest --method POST \
-                --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignments" \
-                --body "{\"principalId\":\"$SP_ID\",\"resourceId\":\"$GRAPH_SP_ID\",\"appRoleId\":\"$DIRECTORY_READWRITE_ALL\"}" \
-                --headers "Content-Type=application/json" 2>/dev/null)
-            DIR_CONSENT_STATUS=$?
-        fi
+        for PERMISSION_NAME in "${REQUIRED_PERMISSIONS[@]}"; do
+            log_verbose "Looking up permission ID for: $PERMISSION_NAME"
+            
+            # Find the permission ID by name in Microsoft Graph app roles
+            PERMISSION_ID=$(az ad sp show --id $GRAPH_APP_ID --query "appRoles[?value=='$PERMISSION_NAME'].id | [0]" -o tsv 2>/dev/null)
+            
+            if [ ! -z "$PERMISSION_ID" ] && [ "$PERMISSION_ID" != "null" ]; then
+                log_verbose "Found permission ID for $PERMISSION_NAME: $PERMISSION_ID"
+                PERMISSION_IDS+=("$PERMISSION_ID")
+                PERMISSION_NAMES+=("$PERMISSION_NAME")
+                
+                # Add the permission to app registration
+                log_verbose "Adding $PERMISSION_NAME permission..."
+                if [[ "$VERBOSE" == "true" ]]; then
+                    echo "🔍 [VERBOSE] Executing: az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $PERMISSION_ID=Role"
+                    PERM_OUTPUT=$(az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $PERMISSION_ID=Role 2>&1)
+                    PERM_STATUS=$?
+                    echo "🔍 [VERBOSE] $PERMISSION_NAME permission output: $PERM_OUTPUT"
+                else
+                    PERM_OUTPUT=$(az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $PERMISSION_ID=Role 2>&1)
+                    PERM_STATUS=$?
+                fi
+                
+                if [ $PERM_STATUS -eq 0 ]; then
+                    echo "✅ $PERMISSION_NAME permission added"
+                    log_verbose "Service Principal now has $PERMISSION_NAME permission"
+                elif [[ "$PERM_OUTPUT" == *"already exists"* ]] || [[ "$PERM_OUTPUT" == *"Conflict"* ]]; then
+                    echo "✅ $PERMISSION_NAME permission already exists"
+                    log_verbose "$PERMISSION_NAME permission already configured"
+                else
+                    echo "⚠️  WARNING - Could not add $PERMISSION_NAME permission"
+                    log_verbose "Error adding $PERMISSION_NAME: $PERM_OUTPUT"
+                fi
+            else
+                echo "⚠️  WARNING - Could not find permission ID for: $PERMISSION_NAME"
+                log_verbose "Permission $PERMISSION_NAME not found in Microsoft Graph app roles"
+            fi
+        done
         
-        # Check results
-        CONSENT_SUCCESS=0
-        if [ $APP_CONSENT_STATUS -eq 0 ]; then
-            echo "✅ Admin consent granted for Application.ReadWrite.All"
-            log_verbose "Application.ReadWrite.All app permission is now consented"
-        elif [[ "$APP_CONSENT_OUTPUT" == *"already exists"* ]] || [[ "$APP_CONSENT_OUTPUT" == *"Conflict"* ]]; then
-            echo "✅ Application.ReadWrite.All already consented"
-            log_verbose "Application permission was already consented"
-        else
-            echo "⚠️  WARNING - Could not grant consent for Application.ReadWrite.All"
-            log_verbose "Application consent failed: $APP_CONSENT_OUTPUT"
-            CONSENT_SUCCESS=1
-        fi
+        # Grant admin consent for the permissions using REST API
+        echo "🔐 Granting admin consent for permissions..."
+        log_verbose "Granting admin consent for Microsoft Graph app permissions via REST API..."
         
-        if [ $DIR_CONSENT_STATUS -eq 0 ]; then
-            echo "✅ Admin consent granted for Directory.ReadWrite.All"
-            log_verbose "Directory.ReadWrite.All app permission is now consented"
-        elif [[ "$DIR_CONSENT_OUTPUT" == *"already exists"* ]] || [[ "$DIR_CONSENT_OUTPUT" == *"Conflict"* ]]; then
-            echo "✅ Directory.ReadWrite.All already consented"
-            log_verbose "Directory permission was already consented"
+        if [ ! -z "$GRAPH_SP_ID" ] && [ ${#PERMISSION_IDS[@]} -gt 0 ]; then
+            log_verbose "Microsoft Graph Service Principal ID: $GRAPH_SP_ID"
+            
+            CONSENT_SUCCESS_COUNT=0
+            TOTAL_PERMISSIONS=${#PERMISSION_IDS[@]}
+            
+            # Grant admin consent for each permission
+            for i in "${!PERMISSION_IDS[@]}"; do
+                PERMISSION_ID="${PERMISSION_IDS[i]}"
+                PERMISSION_NAME="${PERMISSION_NAMES[i]}"
+                
+                log_verbose "Granting admin consent for $PERMISSION_NAME app permission..."
+                if [[ "$VERBOSE" == "true" ]]; then
+                    echo "🔍 [VERBOSE] Creating app role assignment for $PERMISSION_NAME..."
+                    CONSENT_OUTPUT=$(az rest --method POST \
+                        --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignments" \
+                        --body "{\"principalId\":\"$SP_ID\",\"resourceId\":\"$GRAPH_SP_ID\",\"appRoleId\":\"$PERMISSION_ID\"}" \
+                        --headers "Content-Type=application/json" 2>&1)
+                    CONSENT_STATUS=$?
+                    echo "🔍 [VERBOSE] $PERMISSION_NAME consent output: $CONSENT_OUTPUT"
+                else
+                    CONSENT_OUTPUT=$(az rest --method POST \
+                        --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignments" \
+                        --body "{\"principalId\":\"$SP_ID\",\"resourceId\":\"$GRAPH_SP_ID\",\"appRoleId\":\"$PERMISSION_ID\"}" \
+                        --headers "Content-Type=application/json" 2>/dev/null)
+                    CONSENT_STATUS=$?
+                fi
+                
+                if [ $CONSENT_STATUS -eq 0 ]; then
+                    echo "✅ Admin consent granted for $PERMISSION_NAME"
+                    log_verbose "$PERMISSION_NAME app permission is now consented"
+                    ((CONSENT_SUCCESS_COUNT++))
+                elif [[ "$CONSENT_OUTPUT" == *"already exists"* ]] || [[ "$CONSENT_OUTPUT" == *"Conflict"* ]]; then
+                    echo "✅ $PERMISSION_NAME already consented"
+                    log_verbose "$PERMISSION_NAME permission was already consented"
+                    ((CONSENT_SUCCESS_COUNT++))
+                else
+                    echo "⚠️  WARNING - Could not grant consent for $PERMISSION_NAME"
+                    log_verbose "$PERMISSION_NAME consent failed: $CONSENT_OUTPUT"
+                fi
+            done
+            
+            # Final status check
+            if [ $CONSENT_SUCCESS_COUNT -eq $TOTAL_PERMISSIONS ]; then
+                echo "✅ Admin consent granted for all Microsoft Graph app permissions ($CONSENT_SUCCESS_COUNT/$TOTAL_PERMISSIONS)"
+                log_verbose "All app permissions are now active and usable"
+            elif [ $CONSENT_SUCCESS_COUNT -gt 0 ]; then
+                echo "⚠️  Partial admin consent granted ($CONSENT_SUCCESS_COUNT/$TOTAL_PERMISSIONS permissions)"
+                echo "   📝 Please grant remaining admin consent manually in Azure Portal:"
+                echo "   📝 Azure AD > App registrations > $APP_NAME > API permissions > Grant admin consent"
+            else
+                echo "⚠️  WARNING - Could not grant consent for any app permissions"
+                echo "   📝 Please grant admin consent manually in Azure Portal:"
+                echo "   📝 Azure AD > App registrations > $APP_NAME > API permissions > Grant admin consent"
+            fi
         else
-            echo "⚠️  WARNING - Could not grant consent for Directory.ReadWrite.All"
-            log_verbose "Directory consent failed: $DIR_CONSENT_OUTPUT"
-            CONSENT_SUCCESS=1
+            echo "⚠️  WARNING - No permissions to consent or missing Microsoft Graph Service Principal"
+            echo "   📝 Please add Microsoft Graph permissions manually in Azure Portal:"
+            echo "   📝 Azure AD > App registrations > $APP_NAME > API permissions"
+            echo "   📝 Add required app permissions and grant admin consent"
         fi
-        
-        if [ $CONSENT_SUCCESS -eq 0 ]; then
-            echo "✅ Admin consent granted for Microsoft Graph app permissions"
-            log_verbose "All app permissions are now active and usable"
-        else
-            echo "⚠️  WARNING - Some app permissions could not be consented automatically"
-            echo "   📝 Please grant admin consent manually in Azure Portal:"
-            echo "   📝 Azure AD > App registrations > $APP_NAME > API permissions > Grant admin consent"
-        fi
-    else
-        echo "⚠️  WARNING - Could not find Microsoft Graph Service Principal"
-        echo "   📝 Please add Microsoft Graph permissions manually in Azure Portal:"
-        echo "   📝 Azure AD > App registrations > $APP_NAME > API permissions"
-        echo "   📝 Add: Application.ReadWrite.All and Directory.ReadWrite.All (Application permissions)"
     fi
-    
-else
-    echo "⚠️  WARNING - Could not find Microsoft Graph Service Principal"
-    echo "   📝 Please add Microsoft Graph permissions manually in Azure Portal:"
-    echo "   📝 Azure AD > App registrations > $APP_NAME > API permissions"
-    echo "   📝 Add: Application.ReadWrite.All and Directory.ReadWrite.All (Application permissions)"
 fi
 
 log_verbose "Azure AD directory permissions assignment completed"
@@ -648,10 +630,26 @@ echo "🔒 Security: Service Principal CANNOT assign these roles:"
 echo "   ❌ Owner (8e3af657-a8ff-443c-a75c-2fe8c4bcb635)"
 echo "   ❌ RBAC Administrator (f58310d9-a9f6-439a-9e8d-f62e7b41a168)"
 echo ""
-echo "✅ Service Principal HAS these roles:"
+echo "✅ Service Principal HAS these RBAC roles:"
 echo "   ✅ Owner (with security restrictions - cannot assign/delete Owner and RBAC Admin roles)"
-echo "   ✅ Application.ReadWrite.All (Microsoft Graph API permission for app management)"
-echo "   ✅ Directory.ReadWrite.All (Microsoft Graph API permission for directory operations)"
+echo ""
+echo "✅ Service Principal HAS these Azure AD permissions:"
+for PERMISSION_NAME in "${REQUIRED_PERMISSIONS[@]}"; do
+    case "$PERMISSION_NAME" in
+        "Application.ReadWrite.All")
+            echo "   ✅ $PERMISSION_NAME (Microsoft Graph API permission for app management)"
+            ;;
+        "Directory.ReadWrite.All")
+            echo "   ✅ $PERMISSION_NAME (Microsoft Graph API permission for directory operations)"
+            ;;
+        "AppRoleAssignment.ReadWrite.All")
+            echo "   ✅ $PERMISSION_NAME (Microsoft Graph API permission for role assignments)"
+            ;;
+        *)
+            echo "   ✅ $PERMISSION_NAME (Microsoft Graph API permission)"
+            ;;
+    esac
+done
 echo ""
 
 if [[ "$VERBOSE" == "true" ]]; then
