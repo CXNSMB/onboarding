@@ -1,15 +1,15 @@
 #!/bin/bash
 # GitHub Actions Azure OIDC Complete Setup
-# Usage: curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "app-name" "github-org" "github-repo" "branch" [verbose|management-group] [management-group-name]
-# For dev version: curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/dev/setup-app-registration.sh | bash -s -- "app-name" "github-org" "github-repo" "branch" [verbose|management-group] [management-group-name]
+# Usage: curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "subscription-id" "app-name" "github-org" "github-repo" "branch" [verbose|management-group] [management-group-name]
+# For dev version: curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/dev/setup-app-registration.sh | bash -s -- "subscription-id" "app-name" "github-org" "github-repo" "branch" [verbose|management-group] [management-group-name]
 
 # Check for verbose mode and management group mode
 VERBOSE=""
 MANAGEMENT_GROUP_MODE=""
 MANAGEMENT_GROUP_NAME=""
 
-# Process parameters 5 and 6 for options
-for param in "$5" "$6"; do
+# Process parameters 6 and 7 for options
+for param in "$6" "$7"; do
     if [[ "$param" == "verbose" || "$param" == "-v" || "$param" == "--verbose" ]]; then
         VERBOSE="true"
     elif [[ "$param" == "management-group" || "$param" == "mg" || "$param" == "--management-group" ]]; then
@@ -38,79 +38,132 @@ if ! az account show >/dev/null 2>&1; then
     exit 1
 fi
 
-# Show available subscriptions and allow selection
-echo ""
-echo "📋 Available Azure Subscriptions:"
-echo "=================================="
+# Parameters
+SUBSCRIPTION_ID="${1}"
+APP_NAME="${2:-CXNSMB-github-solution-onboarding}"
+GITHUB_ORG="${3:-CXNSMB}"
+GITHUB_REPO="${4:-solution-onboarding}"
+GITHUB_REF="${5:-main}"
 
-# Get list of subscriptions with index numbers
-mapfile -t SUBSCRIPTIONS < <(az account list --query "[].{name:name, id:subscriptionId, isDefault:isDefault}" -o tsv)
-
-if [ ${#SUBSCRIPTIONS[@]} -eq 0 ]; then
-    echo "❌ FAILED - No subscriptions found"
-    echo "Please check your Azure access permissions"
-    exit 1
-fi
-
-# Display subscriptions with numbers
-for i in "${!SUBSCRIPTIONS[@]}"; do
-    IFS=$'\t' read -r name id isDefault <<< "${SUBSCRIPTIONS[i]}"
-    if [[ "$isDefault" == "true" ]]; then
-        echo "$((i+1)). $name (ID: $id) [CURRENT]"
-        CURRENT_INDEX=$((i+1))
-    else
-        echo "$((i+1)). $name (ID: $id)"
+# Check subscription logic
+if [[ ! -z "$SUBSCRIPTION_ID" ]]; then
+    # Subscription ID provided, validate and use it
+    echo "🔄 Setting subscription to: $SUBSCRIPTION_ID"
+    log_verbose "Switching to subscription: $SUBSCRIPTION_ID"
+    
+    # Verify subscription exists and user has access
+    SUBSCRIPTION_NAME=$(az account show --subscription "$SUBSCRIPTION_ID" --query name -o tsv 2>/dev/null)
+    if [ $? -ne 0 ] || [ -z "$SUBSCRIPTION_NAME" ]; then
+        echo "❌ FAILED - Cannot access subscription: $SUBSCRIPTION_ID"
+        echo "Please check if:"
+        echo "   1. The subscription ID is correct"
+        echo "   2. You have access to this subscription"
+        echo "   3. The subscription is active"
+        exit 1
     fi
-done
-
-echo ""
-echo "🎯 Current subscription is marked with [CURRENT]"
-echo "📝 Enter the number of the subscription to use (or press Enter for current):"
-read -p "Selection: " SELECTION
-
-# Validate and set subscription
-if [[ -z "$SELECTION" ]]; then
-    # Use current subscription
-    echo "✅ Using current subscription"
-    log_verbose "Keeping current subscription active"
-elif [[ "$SELECTION" =~ ^[0-9]+$ ]] && [ "$SELECTION" -ge 1 ] && [ "$SELECTION" -le ${#SUBSCRIPTIONS[@]} ]; then
-    # Valid selection
-    SELECTED_INDEX=$((SELECTION-1))
-    IFS=$'\t' read -r name id isDefault <<< "${SUBSCRIPTIONS[SELECTED_INDEX]}"
     
-    echo "🔄 Switching to subscription: $name"
-    log_verbose "Setting active subscription to: $name (ID: $id)"
-    
+    # Set the subscription
     if [[ "$VERBOSE" == "true" ]]; then
-        az account set --subscription "$id"
+        az account set --subscription "$SUBSCRIPTION_ID"
         SET_STATUS=$?
     else
-        az account set --subscription "$id" >/dev/null 2>&1
+        az account set --subscription "$SUBSCRIPTION_ID" >/dev/null 2>&1
         SET_STATUS=$?
     fi
     
     if [ $SET_STATUS -ne 0 ]; then
-        echo "❌ FAILED - Could not switch to subscription: $name"
+        echo "❌ FAILED - Could not switch to subscription: $SUBSCRIPTION_ID"
         echo "Please check your permissions for this subscription"
         exit 1
     fi
     
-    echo "✅ Successfully switched to subscription: $name"
-    log_verbose "Active subscription is now: $name (ID: $id)"
+    echo "✅ Successfully switched to subscription: $SUBSCRIPTION_NAME"
+    log_verbose "Active subscription is now: $SUBSCRIPTION_NAME (ID: $SUBSCRIPTION_ID)"
 else
-    echo "❌ FAILED - Invalid selection: $SELECTION"
-    echo "Please enter a number between 1 and ${#SUBSCRIPTIONS[@]}"
-    exit 1
+    # No subscription ID provided, check available subscriptions
+    log_verbose "No subscription ID provided, checking available subscriptions..."
+    
+    # Get list of subscriptions
+    mapfile -t SUBSCRIPTIONS < <(az account list --query "[].{name:name, id:id, isDefault:isDefault}" -o tsv)
+    
+    if [ ${#SUBSCRIPTIONS[@]} -eq 0 ]; then
+        echo "❌ FAILED - No subscriptions found"
+        echo "Please check your Azure access permissions"
+        exit 1
+    elif [ ${#SUBSCRIPTIONS[@]} -eq 1 ]; then
+        # Only one subscription, use it automatically
+        IFS=$'\t' read -r name id isDefault <<< "${SUBSCRIPTIONS[0]}"
+        echo "📝 Only one subscription found, using: $name"
+        log_verbose "Automatically using single subscription: $name (ID: $id)"
+        
+        if [[ "$isDefault" != "true" ]]; then
+            # Set as active if not already active
+            if [[ "$VERBOSE" == "true" ]]; then
+                az account set --subscription "$id"
+                SET_STATUS=$?
+            else
+                az account set --subscription "$id" >/dev/null 2>&1
+                SET_STATUS=$?
+            fi
+            
+            if [ $SET_STATUS -ne 0 ]; then
+                echo "❌ FAILED - Could not switch to subscription: $name"
+                echo "Please check your permissions for this subscription"
+                exit 1
+            fi
+            
+            echo "✅ Successfully switched to subscription: $name"
+            log_verbose "Active subscription is now: $name (ID: $id)"
+        else
+            echo "✅ Using current subscription: $name"
+            log_verbose "Subscription was already active: $name (ID: $id)"
+        fi
+    else
+        # Multiple subscriptions found, show options with curl syntax
+        echo ""
+        echo "📋 Multiple Azure Subscriptions Found"
+        echo "======================================"
+        echo ""
+        echo "Please run the script again with a specific subscription ID:"
+        echo ""
+        
+        # Get the script URL (try to detect if this is from curl or local)
+        SCRIPT_URL="https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh"
+        
+        # Generate curl command for each subscription
+        for i in "${!SUBSCRIPTIONS[@]}"; do
+            IFS=$'\t' read -r name id isDefault <<< "${SUBSCRIPTIONS[i]}"
+            echo "🔹 $name"
+            if [[ "$isDefault" == "true" ]]; then
+                echo "   [CURRENT]"
+            fi
+            
+            # Build curl command with all current parameters plus subscription ID
+            CURL_CMD="curl -s $SCRIPT_URL | bash -s -- \"$id\" \"$APP_NAME\" \"$GITHUB_ORG\" \"$GITHUB_REPO\" \"$GITHUB_REF\""
+            
+            # Add verbose if it was specified
+            if [[ "$VERBOSE" == "true" ]]; then
+                CURL_CMD="$CURL_CMD \"verbose\""
+            fi
+            
+            # Add management group options if specified
+            if [[ "$MANAGEMENT_GROUP_MODE" == "true" ]]; then
+                CURL_CMD="$CURL_CMD \"management-group\""
+                if [[ ! -z "$MANAGEMENT_GROUP_NAME" ]]; then
+                    CURL_CMD="$CURL_CMD \"$MANAGEMENT_GROUP_NAME\""
+                fi
+            fi
+            
+            echo "   $CURL_CMD"
+            echo ""
+        done
+        
+        echo "💡 Tip: Copy and paste one of the commands above to run with your desired subscription."
+        echo ""
+        exit 0
+    fi
 fi
 echo ""
-
-echo ""
-
-# Parameters
-APP_NAME="${1:-CXNSMB-github-solution-onboarding}"
-GITHUB_ORG="${2:-CXNSMB}"
-GITHUB_REPO="${3:-solution-onboarding}"
-GITHUB_REF="${4:-main}"
 
 echo "📋 Configuration:"
 echo "   App Name: $APP_NAME"
