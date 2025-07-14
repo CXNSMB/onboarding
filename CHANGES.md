@@ -3,16 +3,17 @@
 ## 📋 What Changed
 
 ### ✅ Parameter Order Updated
-The subscription ID is now the **first parameter** instead of the fifth:
+The subscription ID is now the **first parameter** and the app name is **auto-generated**:
 
 **New Order:**
 1. `SUBSCRIPTION_ID` (optional)
-2. `APP_NAME` 
-3. `GITHUB_ORG`
-4. `GITHUB_REPO` 
-5. `GITHUB_REF`
-6. `OPTIONS` (verbose, management-group)
-7. `MANAGEMENT_GROUP_NAME`
+2. `GITHUB_ORG` (default: CXNSMB)
+3. `GITHUB_REPO` (default: solution-onboarding)
+4. `GITHUB_REF` (default: main)
+5. `OPTIONS` (verbose, management-group)
+6. `MANAGEMENT_GROUP_NAME`
+
+**App Name**: Auto-generated as `{GITHUB_ORG}-github-{GITHUB_REPO}-{TENANT_ID}`
 
 ### ✅ Smart Subscription Handling
 - **Single subscription**: Automatically uses it without user interaction
@@ -35,22 +36,22 @@ All test scripts moved to `/tests/` directory:
 
 ### With Subscription ID (Recommended)
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "12345678-1234-1234-1234-123456789012" "my-app" "my-org" "my-repo" "main"
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "12345678-1234-1234-1234-123456789012" "my-org" "my-repo" "main"
 ```
 
 ### Auto-detect Subscription
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "" "my-app" "my-org" "my-repo" "main"
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "" "my-org" "my-repo" "main"
 ```
 
 ### With Verbose Mode
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "12345678-1234-1234-1234-123456789012" "my-app" "my-org" "my-repo" "main" "verbose"
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "12345678-1234-1234-1234-123456789012" "my-org" "my-repo" "main" "verbose"
 ```
 
 ### With Management Group
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "12345678-1234-1234-1234-123456789012" "my-app" "my-org" "my-repo" "main" "management-group" "my-mg"
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "12345678-1234-1234-1234-123456789012" "my-org" "my-repo" "main" "management-group" "my-mg"
 ```
 
 ## 📊 Behavior Scenarios

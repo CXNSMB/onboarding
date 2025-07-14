@@ -31,30 +31,6 @@ done
 echo "🔍 Simulating Azure CLI connectivity check..."
 echo "✅ Connected to Azure CLI"
 
-# Parameters
-APP_NAME="${1:-test-app}"
-GITHUB_ORG="${2:-test-org}"
-GITHUB_REPO="${3:-test-repo}"
-GITHUB_REF="${4:-main}"
-SUBSCRIPTION_ID="${5}"
-
-echo ""
-echo "📋 Test Configuration:"
-echo "   App Name: $APP_NAME"
-echo "   GitHub: $GITHUB_ORG/$GITHUB_REPO (branch: $GITHUB_REF)"
-echo "   Subscription ID: ${SUBSCRIPTION_ID:-'(not provided)'}"
-if [[ "$VERBOSE" == "true" ]]; then
-    echo "   Verbose Mode: ENABLED"
-fi
-if [[ "$MANAGEMENT_GROUP_MODE" == "true" ]]; then
-    if [[ ! -z "$MANAGEMENT_GROUP_NAME" ]]; then
-        echo "   Scope: Management Group ($MANAGEMENT_GROUP_NAME)"
-    else
-        echo "   Scope: Management Group (root level)"
-    fi
-fi
-echo ""
-
 # Simulate Azure subscriptions response based on test mode
 if [[ "$1" == "single" ]]; then
     # Simulate single subscription
@@ -62,6 +38,11 @@ if [[ "$1" == "single" ]]; then
     MOCK_SUBSCRIPTIONS=(
         $'Single Test Subscription\t12345678-1234-1234-1234-123456789012\ttrue'
     )
+    # Parameters for single test
+    GITHUB_ORG="${2:-test-org}"
+    GITHUB_REPO="${3:-test-repo}"
+    GITHUB_REF="${4:-main}"
+    SUBSCRIPTION_ID="${5}"
 elif [[ "$1" == "multiple" ]]; then
     # Simulate multiple subscriptions
     echo "📝 Simulating multiple subscriptions scenario..."
@@ -71,17 +52,16 @@ elif [[ "$1" == "multiple" ]]; then
         $'Test Subscription\t33333333-3333-3333-3333-333333333333\tfalse'
         $'Staging Subscription\t44444444-4444-4444-4444-444444444444\tfalse'
     )
-    # Reset parameters for multiple test
-    APP_NAME="${2:-test-app}"
-    GITHUB_ORG="${3:-test-org}"
-    GITHUB_REPO="${4:-test-repo}"
-    GITHUB_REF="${5:-main}"
-    SUBSCRIPTION_ID="${6}"
+    # Parameters for multiple test
+    GITHUB_ORG="${2:-test-org}"
+    GITHUB_REPO="${3:-test-repo}"
+    GITHUB_REF="${4:-main}"
+    SUBSCRIPTION_ID="${5}"
     # Re-process verbose/mg options for multiple test
     VERBOSE=""
     MANAGEMENT_GROUP_MODE=""
     MANAGEMENT_GROUP_NAME=""
-    for param in "$7" "$8"; do
+    for param in "$6" "$7"; do
         if [[ "$param" == "verbose" || "$param" == "-v" || "$param" == "--verbose" ]]; then
             VERBOSE="true"
         elif [[ "$param" == "management-group" || "$param" == "mg" || "$param" == "--management-group" ]]; then
@@ -172,7 +152,7 @@ else
             fi
             
             # Build curl command with subscription ID as first parameter
-            CURL_CMD="curl -s $SCRIPT_URL | bash -s -- \"$id\" \"$APP_NAME\" \"$GITHUB_ORG\" \"$GITHUB_REPO\" \"$GITHUB_REF\""
+            CURL_CMD="curl -s $SCRIPT_URL | bash -s -- \"$id\" \"$GITHUB_ORG\" \"$GITHUB_REPO\" \"$GITHUB_REF\""
             
             # Add verbose if it was specified
             if [[ "$VERBOSE" == "true" ]]; then

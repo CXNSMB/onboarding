@@ -1,15 +1,15 @@
 #!/bin/bash
 # GitHub Actions Azure OIDC Complete Setup
-# Usage: curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "subscription-id" "app-name" "github-org" "github-repo" "branch" [verbose|management-group] [management-group-name]
-# For dev version: curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/dev/setup-app-registration.sh | bash -s -- "subscription-id" "app-name" "github-org" "github-repo" "branch" [verbose|management-group] [management-group-name]
+# Usage: curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "subscription-id" "github-org" "github-repo" "branch" [verbose|management-group] [management-group-name]
+# For dev version: curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/dev/setup-app-registration.sh | bash -s -- "subscription-id" "github-org" "github-repo" "branch" [verbose|management-group] [management-group-name]
 
 # Check for verbose mode and management group mode
 VERBOSE=""
 MANAGEMENT_GROUP_MODE=""
 MANAGEMENT_GROUP_NAME=""
 
-# Process parameters 6 and 7 for options
-for param in "$6" "$7"; do
+# Process parameters 5 and 6 for options
+for param in "$5" "$6"; do
     if [[ "$param" == "verbose" || "$param" == "-v" || "$param" == "--verbose" ]]; then
         VERBOSE="true"
     elif [[ "$param" == "management-group" || "$param" == "mg" || "$param" == "--management-group" ]]; then
@@ -38,12 +38,22 @@ if ! az account show >/dev/null 2>&1; then
     exit 1
 fi
 
+# Get tenant ID for app name generation
+TENANT_ID=$(az account show --query tenantId -o tsv 2>/dev/null)
+if [ -z "$TENANT_ID" ]; then
+    echo "❌ FAILED - Could not retrieve tenant ID"
+    exit 1
+fi
+
 # Parameters
 SUBSCRIPTION_ID="${1}"
-APP_NAME="${2:-CXNSMB-github-solution-onboarding}"
-GITHUB_ORG="${3:-CXNSMB}"
-GITHUB_REPO="${4:-solution-onboarding}"
-GITHUB_REF="${5:-main}"
+GITHUB_ORG="${2:-CXNSMB}"
+GITHUB_REPO="${3:-solution-onboarding}"
+GITHUB_REF="${4:-main}"
+
+# Generate app name: <github-org>-github-<repo>-<tenant-id>
+APP_NAME="${GITHUB_ORG}-github-${GITHUB_REPO}-${TENANT_ID}"
+log_verbose "Generated app name: $APP_NAME"
 
 # Check subscription logic
 if [[ ! -z "$SUBSCRIPTION_ID" ]]; then
@@ -138,8 +148,8 @@ else
                 echo "   [CURRENT]"
             fi
             
-            # Build curl command with all current parameters plus subscription ID
-            CURL_CMD="curl -s $SCRIPT_URL | bash -s -- \"$id\" \"$APP_NAME\" \"$GITHUB_ORG\" \"$GITHUB_REPO\" \"$GITHUB_REF\""
+            # Build curl command with subscription ID as first parameter
+            CURL_CMD="curl -s $SCRIPT_URL | bash -s -- \"$id\" \"$GITHUB_ORG\" \"$GITHUB_REPO\" \"$GITHUB_REF\""
             
             # Add verbose if it was specified
             if [[ "$VERBOSE" == "true" ]]; then

@@ -62,22 +62,23 @@ When a subscription ID is provided as the first parameter, the script validates 
 The main script now uses this parameter order:
 
 1. `SUBSCRIPTION_ID` (optional - if empty, auto-detects)
-2. `APP_NAME` (default: CXNSMB-github-solution-onboarding)
-3. `GITHUB_ORG` (default: CXNSMB)
-4. `GITHUB_REPO` (default: solution-onboarding)
-5. `GITHUB_REF` (default: main)
-6. `OPTIONS` (verbose, management-group)
-7. `MANAGEMENT_GROUP_NAME` (if management-group option is used)
+2. `GITHUB_ORG` (default: CXNSMB)
+3. `GITHUB_REPO` (default: solution-onboarding)
+4. `GITHUB_REF` (default: main)
+5. `OPTIONS` (verbose, management-group)
+6. `MANAGEMENT_GROUP_NAME` (if management-group option is used)
+
+**Note:** The app name is automatically generated as: `{GITHUB_ORG}-github-{GITHUB_REPO}-{TENANT_ID}`
 
 ## Example Commands
 
 ```bash
 # With subscription ID
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "12345678-1234-1234-1234-123456789012" "my-app" "my-org" "my-repo" "main"
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "12345678-1234-1234-1234-123456789012" "my-org" "my-repo" "main"
 
 # Auto-detect subscription
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "" "my-app" "my-org" "my-repo" "main"
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "" "my-org" "my-repo" "main"
 
 # With verbose mode
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "12345678-1234-1234-1234-123456789012" "my-app" "my-org" "my-repo" "main" "verbose"
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "12345678-1234-1234-1234-123456789012" "my-org" "my-repo" "main" "verbose"
 ```
