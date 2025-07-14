@@ -15,7 +15,7 @@ curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-regis
 ```
 
 This uses the default parameters:
-- App Name: `CXNSMB-github-solution-onboarding`
+- App Name: Auto-generated as `CXNSMB-github-solution-onboarding-<tenant-id>`
 - GitHub Org: `CXNSMB`
 - GitHub Repo: `solution-onboarding`
 - Branch: `main`
@@ -25,14 +25,16 @@ This uses the default parameters:
 **For your own repository:**
 
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "YourApp-GitHub" "your-org" "your-repo" "main"
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "subscription-id" "your-org" "your-repo" "main"
 ```
 
 **Replace the parameters:**
-- `"YourApp-GitHub"` → Your app name
+- `"subscription-id"` → Your Azure subscription ID (optional - auto-detects if omitted)
 - `"your-org"` → Your GitHub organization
 - `"your-repo"` → Your GitHub repository  
 - `"main"` → Your GitHub branch
+
+**App name will be auto-generated as:** `your-org-github-your-repo-<tenant-id>`
 
 ### 🔍 Verbose Mode
 
@@ -45,7 +47,7 @@ curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-regis
 **Custom with verbose output:**
 
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "YourApp-GitHub" "your-org" "your-repo" "main" verbose
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "subscription-id" "your-org" "your-repo" "main" verbose
 ```
 
 ### 🏢 Management Group Scope
@@ -59,19 +61,19 @@ curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-regis
 **Custom management group name:**
 
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "YourApp-GitHub" "your-org" "your-repo" "main" management-group "CXNSMB"
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "subscription-id" "your-org" "your-repo" "main" management-group "CXNSMB"
 ```
 
 **Root management group with verbose:**
 
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "YourApp-GitHub" "your-org" "your-repo" "main" management-group verbose
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "subscription-id" "your-org" "your-repo" "main" management-group verbose
 ```
 
 **Custom management group with verbose:**
 
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "YourApp-GitHub" "your-org" "your-repo" "main" management-group "MyCompany" verbose
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "subscription-id" "your-org" "your-repo" "main" management-group "MyCompany" verbose
 ```
 
 **Verbose mode provides:**
@@ -129,7 +131,7 @@ The script provides clear feedback and outputs the GitHub Secrets you need:
 
 ## 📋 What gets created?
 
-- **App Registration**: `CXNSMB-github-solution-onboarding` (default) or your custom name
+- **App Registration**: Auto-generated name as `<github-org>-github-<repo>-<tenant-id>` (e.g., `CXNSMB-github-solution-onboarding-abc123`)
 - **Service Principal**: Linked to the app registration
 - **Federated Credential**: For GitHub Actions OIDC (passwordless authentication)
 - **Microsoft Graph API Permissions**: Application.ReadWrite.All and Directory.ReadWrite.All for app management
@@ -211,13 +213,15 @@ The script supports two different scope levels for role assignment:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `appName` | `CXNSMB-github-solution-onboarding` | Name of the App Registration |
+| `subscriptionId` | (auto-detect) | Azure subscription ID (optional - auto-detects if omitted) |
 | `githubOrg` | `CXNSMB` | GitHub organization name |
 | `githubRepo` | `solution-onboarding` | GitHub repository name |
 | `githubRef` | `main` | GitHub branch/environment |
 | `verbose` | (none) | Add `verbose` for detailed logging |
 | `management-group` | (none) | Add `management-group` for management group scope |
 | `management-group-name` | (root) | Optional: Specify management group name (creates if needed) |
+
+**App Name:** Auto-generated as `<githubOrg>-github-<githubRepo>-<tenantId>`
 
 ## 💡 Usage Examples
 
@@ -226,34 +230,34 @@ The script supports two different scope levels for role assignment:
 curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash
 ```
 
-**Different app name for CXNSMB/solution-onboarding:**
+**With specific subscription ID:**
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyProject-GitHub"
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "12345678-1234-1234-1234-123456789012"
 ```
 
-**Different repository in CXNSMB:**
+**Different organization:**
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp" "CXNSMB" "my-repo"
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "subscription-id" "MyCompany" "my-repo"
 ```
 
 **Management group scope (enterprise-wide access):**
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp" "CXNSMB" "my-repo" "main" management-group
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "subscription-id" "MyCompany" "my-repo" "main" management-group
 ```
 
 **Specific management group (CXNSMB):**
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp" "CXNSMB" "my-repo" "main" management-group "CXNSMB"
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "subscription-id" "MyCompany" "my-repo" "main" management-group "CXNSMB"
 ```
 
 **Completely custom with verbose:**
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp" "my-org" "my-repo" "develop" verbose
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "subscription-id" "my-org" "my-repo" "develop" verbose
 ```
 
 **Enterprise setup with custom management group and verbose:**
 ```bash
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "MyApp" "my-org" "my-repo" "main" management-group "MyCompany" verbose
+curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/setup-app-registration.sh | bash -s -- "subscription-id" "my-org" "my-repo" "main" management-group "MyCompany" verbose
 ```
 
 ##  GitHub Actions Setup
