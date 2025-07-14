@@ -38,6 +38,74 @@ if ! az account show >/dev/null 2>&1; then
     exit 1
 fi
 
+# Show available subscriptions and allow selection
+echo ""
+echo "📋 Available Azure Subscriptions:"
+echo "=================================="
+
+# Get list of subscriptions with index numbers
+mapfile -t SUBSCRIPTIONS < <(az account list --query "[].{name:name, id:subscriptionId, isDefault:isDefault}" -o tsv)
+
+if [ ${#SUBSCRIPTIONS[@]} -eq 0 ]; then
+    echo "❌ FAILED - No subscriptions found"
+    echo "Please check your Azure access permissions"
+    exit 1
+fi
+
+# Display subscriptions with numbers
+for i in "${!SUBSCRIPTIONS[@]}"; do
+    IFS=$'\t' read -r name id isDefault <<< "${SUBSCRIPTIONS[i]}"
+    if [[ "$isDefault" == "true" ]]; then
+        echo "$((i+1)). $name (ID: $id) [CURRENT]"
+        CURRENT_INDEX=$((i+1))
+    else
+        echo "$((i+1)). $name (ID: $id)"
+    fi
+done
+
+echo ""
+echo "🎯 Current subscription is marked with [CURRENT]"
+echo "📝 Enter the number of the subscription to use (or press Enter for current):"
+read -p "Selection: " SELECTION
+
+# Validate and set subscription
+if [[ -z "$SELECTION" ]]; then
+    # Use current subscription
+    echo "✅ Using current subscription"
+    log_verbose "Keeping current subscription active"
+elif [[ "$SELECTION" =~ ^[0-9]+$ ]] && [ "$SELECTION" -ge 1 ] && [ "$SELECTION" -le ${#SUBSCRIPTIONS[@]} ]; then
+    # Valid selection
+    SELECTED_INDEX=$((SELECTION-1))
+    IFS=$'\t' read -r name id isDefault <<< "${SUBSCRIPTIONS[SELECTED_INDEX]}"
+    
+    echo "🔄 Switching to subscription: $name"
+    log_verbose "Setting active subscription to: $name (ID: $id)"
+    
+    if [[ "$VERBOSE" == "true" ]]; then
+        az account set --subscription "$id"
+        SET_STATUS=$?
+    else
+        az account set --subscription "$id" >/dev/null 2>&1
+        SET_STATUS=$?
+    fi
+    
+    if [ $SET_STATUS -ne 0 ]; then
+        echo "❌ FAILED - Could not switch to subscription: $name"
+        echo "Please check your permissions for this subscription"
+        exit 1
+    fi
+    
+    echo "✅ Successfully switched to subscription: $name"
+    log_verbose "Active subscription is now: $name (ID: $id)"
+else
+    echo "❌ FAILED - Invalid selection: $SELECTION"
+    echo "Please enter a number between 1 and ${#SUBSCRIPTIONS[@]}"
+    exit 1
+fi
+echo ""
+
+echo ""
+
 # Parameters
 APP_NAME="${1:-CXNSMB-github-solution-onboarding}"
 GITHUB_ORG="${2:-CXNSMB}"
