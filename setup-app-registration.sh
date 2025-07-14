@@ -402,7 +402,7 @@ if [ ! -z "$GRAPH_APP_ID" ]; then
         "AppRoleAssignment.ReadWrite.All"
     )
     
-    echo "📝 Adding Microsoft Graph API permissions..."
+    echo "📝 Checking Microsoft Graph API permissions..."
     log_verbose "Looking up permission IDs for: ${REQUIRED_PERMISSIONS[*]}"
     
     # Get Microsoft Graph Service Principal to lookup permission IDs
@@ -413,6 +413,11 @@ if [ ! -z "$GRAPH_APP_ID" ]; then
         echo "   📝 Please add Microsoft Graph permissions manually in Azure Portal"
     else
         log_verbose "Microsoft Graph Service Principal ID: $GRAPH_SP_ID"
+        
+        # Get existing permissions on the app registration
+        log_verbose "Checking existing permissions on app registration..."
+        EXISTING_PERMISSIONS=$(az ad app show --id $APP_ID --query "requiredResourceAccess[?resourceAppId=='$GRAPH_APP_ID'].resourceAccess[].id" -o tsv 2>/dev/null)
+        log_verbose "Existing Microsoft Graph permissions: $(echo $EXISTING_PERMISSIONS | tr '\n' ' ')"
         
         # Process each required permission
         PERMISSION_IDS=()
@@ -426,30 +431,40 @@ if [ ! -z "$GRAPH_APP_ID" ]; then
             
             if [ ! -z "$PERMISSION_ID" ] && [ "$PERMISSION_ID" != "null" ]; then
                 log_verbose "Found permission ID for $PERMISSION_NAME: $PERMISSION_ID"
-                PERMISSION_IDS+=("$PERMISSION_ID")
-                PERMISSION_NAMES+=("$PERMISSION_NAME")
                 
-                # Add the permission to app registration
-                log_verbose "Adding $PERMISSION_NAME permission..."
-                if [[ "$VERBOSE" == "true" ]]; then
-                    echo "🔍 [VERBOSE] Executing: az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $PERMISSION_ID=Role"
-                    PERM_OUTPUT=$(az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $PERMISSION_ID=Role 2>&1)
-                    PERM_STATUS=$?
-                    echo "🔍 [VERBOSE] $PERMISSION_NAME permission output: $PERM_OUTPUT"
-                else
-                    PERM_OUTPUT=$(az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $PERMISSION_ID=Role 2>&1)
-                    PERM_STATUS=$?
-                fi
-                
-                if [ $PERM_STATUS -eq 0 ]; then
-                    echo "✅ $PERMISSION_NAME permission added"
-                    log_verbose "Service Principal now has $PERMISSION_NAME permission"
-                elif [[ "$PERM_OUTPUT" == *"already exists"* ]] || [[ "$PERM_OUTPUT" == *"Conflict"* ]]; then
+                # Check if permission already exists
+                if echo "$EXISTING_PERMISSIONS" | grep -q "$PERMISSION_ID"; then
                     echo "✅ $PERMISSION_NAME permission already exists"
-                    log_verbose "$PERMISSION_NAME permission already configured"
+                    log_verbose "$PERMISSION_NAME permission already configured on app registration"
+                    PERMISSION_IDS+=("$PERMISSION_ID")
+                    PERMISSION_NAMES+=("$PERMISSION_NAME")
                 else
-                    echo "⚠️  WARNING - Could not add $PERMISSION_NAME permission"
-                    log_verbose "Error adding $PERMISSION_NAME: $PERM_OUTPUT"
+                    # Add the permission to app registration
+                    log_verbose "Adding $PERMISSION_NAME permission..."
+                    if [[ "$VERBOSE" == "true" ]]; then
+                        echo "🔍 [VERBOSE] Executing: az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $PERMISSION_ID=Role"
+                        PERM_OUTPUT=$(az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $PERMISSION_ID=Role 2>&1)
+                        PERM_STATUS=$?
+                        echo "🔍 [VERBOSE] $PERMISSION_NAME permission output: $PERM_OUTPUT"
+                    else
+                        PERM_OUTPUT=$(az ad app permission add --id $APP_ID --api $GRAPH_APP_ID --api-permissions $PERMISSION_ID=Role 2>&1)
+                        PERM_STATUS=$?
+                    fi
+                    
+                    if [ $PERM_STATUS -eq 0 ]; then
+                        echo "✅ $PERMISSION_NAME permission added"
+                        log_verbose "Service Principal now has $PERMISSION_NAME permission"
+                        PERMISSION_IDS+=("$PERMISSION_ID")
+                        PERMISSION_NAMES+=("$PERMISSION_NAME")
+                    elif [[ "$PERM_OUTPUT" == *"already exists"* ]] || [[ "$PERM_OUTPUT" == *"Conflict"* ]]; then
+                        echo "✅ $PERMISSION_NAME permission already exists"
+                        log_verbose "$PERMISSION_NAME permission already configured"
+                        PERMISSION_IDS+=("$PERMISSION_ID")
+                        PERMISSION_NAMES+=("$PERMISSION_NAME")
+                    else
+                        echo "⚠️  WARNING - Could not add $PERMISSION_NAME permission"
+                        log_verbose "Error adding $PERMISSION_NAME: $PERM_OUTPUT"
+                    fi
                 fi
             else
                 echo "⚠️  WARNING - Could not find permission ID for: $PERMISSION_NAME"
@@ -464,6 +479,13 @@ if [ ! -z "$GRAPH_APP_ID" ]; then
         if [ ! -z "$GRAPH_SP_ID" ] && [ ${#PERMISSION_IDS[@]} -gt 0 ]; then
             log_verbose "Microsoft Graph Service Principal ID: $GRAPH_SP_ID"
             
+            # Get existing app role assignments (consented permissions)
+            log_verbose "Checking existing app role assignments..."
+            EXISTING_CONSENTS=$(az rest --method GET \
+                --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignments" \
+                --query "value[?resourceId=='$GRAPH_SP_ID'].appRoleId" -o tsv 2>/dev/null)
+            log_verbose "Existing consented permissions: $(echo $EXISTING_CONSENTS | tr '\n' ' ')"
+            
             CONSENT_SUCCESS_COUNT=0
             TOTAL_PERMISSIONS=${#PERMISSION_IDS[@]}
             
@@ -472,34 +494,41 @@ if [ ! -z "$GRAPH_APP_ID" ]; then
                 PERMISSION_ID="${PERMISSION_IDS[i]}"
                 PERMISSION_NAME="${PERMISSION_NAMES[i]}"
                 
-                log_verbose "Granting admin consent for $PERMISSION_NAME app permission..."
-                if [[ "$VERBOSE" == "true" ]]; then
-                    echo "🔍 [VERBOSE] Creating app role assignment for $PERMISSION_NAME..."
-                    CONSENT_OUTPUT=$(az rest --method POST \
-                        --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignments" \
-                        --body "{\"principalId\":\"$SP_ID\",\"resourceId\":\"$GRAPH_SP_ID\",\"appRoleId\":\"$PERMISSION_ID\"}" \
-                        --headers "Content-Type=application/json" 2>&1)
-                    CONSENT_STATUS=$?
-                    echo "🔍 [VERBOSE] $PERMISSION_NAME consent output: $CONSENT_OUTPUT"
-                else
-                    CONSENT_OUTPUT=$(az rest --method POST \
-                        --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignments" \
-                        --body "{\"principalId\":\"$SP_ID\",\"resourceId\":\"$GRAPH_SP_ID\",\"appRoleId\":\"$PERMISSION_ID\"}" \
-                        --headers "Content-Type=application/json" 2>/dev/null)
-                    CONSENT_STATUS=$?
-                fi
-                
-                if [ $CONSENT_STATUS -eq 0 ]; then
-                    echo "✅ Admin consent granted for $PERMISSION_NAME"
-                    log_verbose "$PERMISSION_NAME app permission is now consented"
-                    ((CONSENT_SUCCESS_COUNT++))
-                elif [[ "$CONSENT_OUTPUT" == *"already exists"* ]] || [[ "$CONSENT_OUTPUT" == *"Conflict"* ]]; then
+                # Check if consent already exists
+                if echo "$EXISTING_CONSENTS" | grep -q "$PERMISSION_ID"; then
                     echo "✅ $PERMISSION_NAME already consented"
                     log_verbose "$PERMISSION_NAME permission was already consented"
                     ((CONSENT_SUCCESS_COUNT++))
                 else
-                    echo "⚠️  WARNING - Could not grant consent for $PERMISSION_NAME"
-                    log_verbose "$PERMISSION_NAME consent failed: $CONSENT_OUTPUT"
+                    log_verbose "Granting admin consent for $PERMISSION_NAME app permission..."
+                    if [[ "$VERBOSE" == "true" ]]; then
+                        echo "🔍 [VERBOSE] Creating app role assignment for $PERMISSION_NAME..."
+                        CONSENT_OUTPUT=$(az rest --method POST \
+                            --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignments" \
+                            --body "{\"principalId\":\"$SP_ID\",\"resourceId\":\"$GRAPH_SP_ID\",\"appRoleId\":\"$PERMISSION_ID\"}" \
+                            --headers "Content-Type=application/json" 2>&1)
+                        CONSENT_STATUS=$?
+                        echo "🔍 [VERBOSE] $PERMISSION_NAME consent output: $CONSENT_OUTPUT"
+                    else
+                        CONSENT_OUTPUT=$(az rest --method POST \
+                            --url "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignments" \
+                            --body "{\"principalId\":\"$SP_ID\",\"resourceId\":\"$GRAPH_SP_ID\",\"appRoleId\":\"$PERMISSION_ID\"}" \
+                            --headers "Content-Type=application/json" 2>/dev/null)
+                        CONSENT_STATUS=$?
+                    fi
+                    
+                    if [ $CONSENT_STATUS -eq 0 ]; then
+                        echo "✅ Admin consent granted for $PERMISSION_NAME"
+                        log_verbose "$PERMISSION_NAME app permission is now consented"
+                        ((CONSENT_SUCCESS_COUNT++))
+                    elif [[ "$CONSENT_OUTPUT" == *"already exists"* ]] || [[ "$CONSENT_OUTPUT" == *"Conflict"* ]]; then
+                        echo "✅ $PERMISSION_NAME already consented"
+                        log_verbose "$PERMISSION_NAME permission was already consented"
+                        ((CONSENT_SUCCESS_COUNT++))
+                    else
+                        echo "⚠️  WARNING - Could not grant consent for $PERMISSION_NAME"
+                        log_verbose "$PERMISSION_NAME consent failed: $CONSENT_OUTPUT"
+                    fi
                 fi
             done
             
