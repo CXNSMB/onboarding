@@ -1,0 +1,900 @@
+#!/usr/bin/env pwsh
+<#
+.SYNOPSIS
+    Complete Entra ID setup: Groups, Administrative Unit, and Role Assignments
+.DESCRIPTION
+    This unified script creates all required Entra groups, sets up administrative unit,
+    and assigns both Entra directory roles and RBAC roles. All groups are hard-coded 
+    for standalone usage (copy/paste or Invoke-WebRequest).
+.PARAMETER ConfigFile
+    Path to the JSON configuration file (default: config.json)
+.PARAMETER TenantCode
+    Tenant code to use for group naming (optional, will be derived if not provided)
+.PARAMETER SetupEntraOnly
+    Only setup Entra ID administrative unit and roles, skip group creation
+.NOTES
+    Requires: Global Admin and Subscription Owner permissions
+    Requires: Azure CLI (az) installed and logged in
+    Author: Generated for Lub-LZ
+#>
+
+[CmdletBinding()]
+param(
+    [switch]$WhatIf,
+    [string]$ConfigFile = "$PSScriptRoot/config.json",
+    [string]$TenantCode,
+    [switch]$SetupEntraOnly
+)
+
+# Hard-coded group definitions for standalone usage
+$aTenantGroups = @(
+    @{"name"="sec-tenant-dailyadmin";
+    "description"="group for daily operations";
+    "roles"=@("User Administrator","Groups Administrator")},
+    @{"name"="sec-tenant-privadmin";
+    "description"="group with priviledged roles";
+    "roles"=@("User Administrator","Groups Administrator","Privileged Role Administrator","Security Administrator","Application Administrator","Global Reader")},
+    @{"name"="sec-tenant-reservations-read";
+    "description"="can read azure reservations";
+    "roles"=@()},
+    @{"name"="sec-tenant-reservations-admin";
+    "description"="can manage azure reservations";
+    "roles"=@()},
+    @{"name"="sec-tenant-reservations-purchase";
+    "description"="can purchase azure reservations";
+    "roles"=@()},
+    @{"name"="sec-tenant-break-glass";
+    "description"="break glass accounts, dynamic, informational";
+    "roles"=@()}
+)
+
+$aSubscriptionGroups = @(
+    @{"name"="reader";
+    "description"="Reader on subscription";
+    "RBACroles"=@("Reader")},
+    @{"name"="dailyadmin";
+    "description"="Daily admin on subscription";
+    "RBACroles"=@("Reader","Backup Reader","Desktop Virtualization Virtual Machine Contributor","Desktop Virtualization User Session Operator")},
+    @{"name"="contributor";
+    "description"="Contributor on subscription";
+    "RBACroles"=@("Contributor")},
+    @{"name"="costreader";
+    "description"="can read cost information";
+    "RBACroles"=@("Cost Management Reader")},
+    @{"name"="sec-uaa";
+    "description"="Restricted User Access Administrator";
+    "RBACroles"=@("User Access Administrator")},
+    @{"name"="owner";
+    "description"="Owner on subscription";
+    "RBACroles"=@("Owner")}
+)
+
+# Helper function to write colored output
+function Write-ColorOutput {
+    param(
+        [string]$Message,
+        [string]$Color = "White"
+    )
+    switch ($Color) {
+        "Green" { Write-Host $Message -ForegroundColor Green }
+        "Yellow" { Write-Host $Message -ForegroundColor Yellow }
+        "Red" { Write-Host $Message -ForegroundColor Red }
+        "Cyan" { Write-Host $Message -ForegroundColor Cyan }
+        default { Write-Host $Message }
+    }
+}
+
+# Function to load configuration
+function Get-Configuration {
+    param([string]$Path)
+    
+    if (-not (Test-Path $Path)) {
+        Write-ColorOutput "Configuration file not found: $Path" "Yellow"
+        return $null
+    }
+    
+    try {
+        $config = Get-Content $Path | ConvertFrom-Json
+        return $config
+    }
+    catch {
+        Write-ColorOutput "Error loading configuration file: $($_.Exception.Message)" "Red"
+        return $null
+    }
+}
+
+# Function to save configuration
+function Save-ConfigurationFile {
+    param(
+        [string]$Path,
+        [object]$Config,
+        [hashtable]$ProcessedTenantGroups = @{},
+        [hashtable]$ProcessedSubscriptionGroups = @{},
+        [string]$SubscriptionPrefix = ""
+    )
+    
+    try {
+        # Load existing config to preserve other subscriptions
+        $existingSubscriptions = @{}
+        if (Test-Path $Path) {
+            try {
+                $existingConfig = Get-Content $Path | ConvertFrom-Json
+                if ($existingConfig.subscriptions) {
+                    # Convert existing subscriptions to hashtable
+                    foreach ($prop in $existingConfig.subscriptions.PSObject.Properties) {
+                        $existingSubscriptions[$prop.Name] = @{
+                            prefix = $prop.Value.prefix
+                            groups = @{}
+                        }
+                        # Copy groups
+                        foreach ($groupProp in $prop.Value.groups.PSObject.Properties) {
+                            $existingSubscriptions[$prop.Name].groups[$groupProp.Name] = $groupProp.Value
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-ColorOutput "Warning: Could not load existing subscriptions, starting fresh" "Yellow"
+            }
+        }
+        
+        # New structure: tenantconfig and subscriptions hashtable
+        $configHash = @{
+            tenantconfig = @{
+                tenantCode = $Config.tenantCode
+                tenantId = $Config.tenantId
+                restrictedAdminUnitId = $Config.restrictedAdminUnitId
+                groups = @{}  # Flat structure: "groupname" = "guid"
+                lastUpdated = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
+            }
+            subscriptions = $existingSubscriptions  # Start with existing subscriptions
+        }
+        
+        # Add processed tenant groups (flat structure)
+        foreach ($groupName in $ProcessedTenantGroups.Keys) {
+            $configHash.tenantconfig.groups[$groupName] = $ProcessedTenantGroups[$groupName]
+        }
+        
+        # Add or update current subscription with prefix and groups
+        if ($Config.subscriptionId) {
+            $configHash.subscriptions[$Config.subscriptionId] = @{
+                prefix = "sec-az-$SubscriptionPrefix"
+                groups = @{}
+            }
+            
+            # Add processed subscription groups (without prefix in name)
+            foreach ($fullGroupName in $ProcessedSubscriptionGroups.Keys) {
+                # Remove the "sec-az-xxxx-" prefix from group name
+                $cleanGroupName = $fullGroupName -replace "^sec-az-$SubscriptionPrefix-", ""
+                $configHash.subscriptions[$Config.subscriptionId].groups[$cleanGroupName] = $ProcessedSubscriptionGroups[$fullGroupName]
+            }
+        }
+        
+        $configHash | ConvertTo-Json -Depth 10 | Set-Content -Path $Path
+        Write-ColorOutput "Configuration saved to: $Path" "Green"
+    }
+    catch {
+        Write-ColorOutput "Error saving configuration: $($_.Exception.Message)" "Red"
+    }
+}
+
+# Function to execute Microsoft Graph REST API call
+function Invoke-GraphRequest {
+    param(
+        [string]$Method = "GET",
+        [string]$Uri,
+        [object]$Body = $null,
+        [string]$Description,
+        [switch]$IgnoreError
+    )
+    
+    Write-ColorOutput "Executing: $Description" "Cyan"
+    
+    if ($WhatIf) {
+        Write-ColorOutput "WHATIF: Would execute: $Method $Uri" "Yellow"
+        if ($Body) {
+            Write-ColorOutput "WHATIF: With body: $($Body | ConvertTo-Json -Compress)" "Yellow"
+        }
+        return $null
+    }
+    
+    try {
+        $azArgs = @("rest", "--method", $Method, "--url", $Uri)
+        
+        if ($Body) {
+            $bodyJson = $Body | ConvertTo-Json -Depth 10 -Compress
+            $azArgs += @("--body", $bodyJson)
+        }
+        
+        $result = & az @azArgs 2>&1
+        $exitCode = $LASTEXITCODE
+        
+        if ($exitCode -ne 0 -and -not $IgnoreError) {
+            Write-ColorOutput "Error executing Graph request: $result" "Red"
+            return $null
+        }
+        
+        if ($result -and $result -ne "null") {
+            return $result | ConvertFrom-Json -ErrorAction SilentlyContinue
+        }
+        return $result
+    }
+    catch {
+        if (-not $IgnoreError) {
+            Write-ColorOutput "Exception executing Graph request: $($_.Exception.Message)" "Red"
+        }
+        return $null
+    }
+}
+
+# Function to check if group exists
+function Get-GroupByName {
+    param([string]$GroupName)
+    
+    $existingGroup = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayName eq '$GroupName'" -Description "Checking if group '$GroupName' exists" -IgnoreError
+    
+    if ($existingGroup -and $existingGroup.value -and $existingGroup.value.Count -gt 0) {
+        return $existingGroup.value[0]
+    }
+    return $null
+}
+
+# Function to create Entra group with Microsoft Graph
+function New-GraphGroup {
+    param(
+        [string]$GroupName,
+        [string]$Description,
+        [switch]$RoleAssignable,
+        [string]$AdminUnitId = $null
+    )
+    
+    $existingGroup = Get-GroupByName -GroupName $GroupName
+    if ($existingGroup) {
+        Write-ColorOutput "Group '$GroupName' already exists" "Yellow"
+        
+        # Add existing group to administrative unit if specified
+        if ($AdminUnitId -and $existingGroup.id) {
+            $memberBody = @{
+                "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$($existingGroup.id)"
+            }
+            $addToUnit = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$AdminUnitId/members/`$ref" -Body $memberBody -Description "Adding existing group to administrative unit" -IgnoreError
+            
+            if ($addToUnit) {
+                Write-ColorOutput "Added existing group to administrative unit" "Green"
+            }
+        }
+        
+        return $existingGroup
+    }
+    
+    if ($WhatIf) {
+        Write-ColorOutput "WHATIF: Would create group '$GroupName' (role-assignable: $RoleAssignable)" "Cyan"
+        return $null
+    }
+    
+    try {
+        Write-ColorOutput "Creating group: $GroupName (role-assignable: $RoleAssignable)" "Green"
+        $mailNickname = $GroupName -replace '[^a-zA-Z0-9]', ''
+        
+        $groupBody = @{
+            displayName = $GroupName
+            mailNickname = $mailNickname
+            description = $Description
+            mailEnabled = $false
+            securityEnabled = $true
+        }
+        
+        if ($RoleAssignable) {
+            $groupBody.isAssignableToRole = $true
+        }
+        
+        $group = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/groups" -Body $groupBody -Description "Creating group '$GroupName'"
+        
+        if ($group -and $group.id) {
+            Write-ColorOutput "Successfully created group: $($group.displayName) (ID: $($group.id))" "Green"
+            
+            # Add to administrative unit if specified
+            if ($AdminUnitId -and $group.id) {
+                $memberBody = @{
+                    "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$($group.id)"
+                }
+                $addToUnit = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$AdminUnitId/members/`$ref" -Body $memberBody -Description "Adding group to administrative unit" -IgnoreError
+                
+                if ($addToUnit) {
+                    Write-ColorOutput "Added group to administrative unit" "Green"
+                }
+            }
+            
+            return $group
+        } else {
+            Write-ColorOutput "Failed to create group: $GroupName" "Red"
+            return $null
+        }
+    }
+    catch {
+        Write-ColorOutput "Error creating group '$GroupName': $($_.Exception.Message)" "Red"
+        return $null
+    }
+}
+
+# Function to set RBAC role assignment
+function Set-AzRoleAssignment {
+    param(
+        [string]$GroupObjectId,
+        [string]$RoleName,
+        [string]$GroupName,
+        [string]$SubscriptionId
+    )
+    
+    try {
+        if ($WhatIf) {
+            Write-ColorOutput "WHATIF: Would assign RBAC role '$RoleName' to group '$GroupName'" "Yellow"
+            return
+        }
+        
+        # Check if assignment already exists
+        $existingAssignment = az role assignment list --assignee $GroupObjectId --role $RoleName --scope "/subscriptions/$SubscriptionId" --query "[0].id" --output tsv 2>&1
+        
+        if ($existingAssignment -and -not $existingAssignment.StartsWith("ERROR")) {
+            Write-ColorOutput "RBAC role '$RoleName' already assigned to group '$GroupName' on subscription" "Yellow"
+            return
+        }
+        
+        # Create the assignment with principalType to handle replication delay
+        $assignment = az role assignment create --assignee-object-id $GroupObjectId --assignee-principal-type Group --role $RoleName --scope "/subscriptions/$SubscriptionId" 2>&1
+        
+        if ($LASTEXITCODE -eq 0) {
+            Write-ColorOutput "Successfully assigned RBAC role '$RoleName' to group '$GroupName' on subscription" "Green"
+        } else {
+            Write-ColorOutput "Failed to assign RBAC role '$RoleName' to group '$GroupName': $assignment" "Red"
+        }
+    }
+    catch {
+        Write-ColorOutput "Error assigning RBAC role '$RoleName' to group '$GroupName': $($_.Exception.Message)" "Red"
+    }
+}
+
+# Function to assign tenant-level RBAC role (for reservations, etc.)
+function Set-TenantRbacRole {
+    param(
+        [string]$GroupName,
+        [string]$RoleName,
+        [string]$Scope
+    )
+    
+    try {
+        if ($WhatIf) {
+            Write-ColorOutput "WHATIF: Would assign tenant RBAC role '$RoleName' to group '$GroupName' at scope '$Scope'" "Yellow"
+            return
+        }
+        
+        # First, verify the group exists by looking it up
+        Write-ColorOutput "Verifying group '$GroupName' exists..." "Cyan"
+        $group = Get-GroupByName -GroupName $GroupName
+        
+        if (-not $group -or -not $group.id) {
+            Write-ColorOutput "Group '$GroupName' does not exist. Cannot assign role." "Red"
+            return $false
+        }
+        
+        Write-ColorOutput "Group verified: $GroupName (ID: $($group.id))" "Green"
+        
+        # Check if assignment already exists
+        $existingAssignment = az role assignment list --assignee $group.id --role $RoleName --scope $Scope --query "[0].id" --output tsv 2>&1
+        
+        if ($existingAssignment -and -not $existingAssignment.StartsWith("ERROR")) {
+            Write-ColorOutput "Tenant RBAC role '$RoleName' already assigned to group '$GroupName' at scope '$Scope'" "Yellow"
+            return $true
+        }
+        
+        # Create the assignment with principalType
+        Write-ColorOutput "Assigning tenant RBAC role '$RoleName' to group '$GroupName' at scope '$Scope'..." "Cyan"
+        $assignment = az role assignment create --assignee-object-id $group.id --assignee-principal-type Group --role $RoleName --scope $Scope 2>&1
+        
+        if ($LASTEXITCODE -eq 0) {
+            Write-ColorOutput "Successfully assigned tenant RBAC role '$RoleName' to group '$GroupName' at scope '$Scope'" "Green"
+            return $true
+        } else {
+            Write-ColorOutput "Failed to assign tenant RBAC role '$RoleName' to group '$GroupName': $assignment" "Red"
+            return $false
+        }
+    }
+    catch {
+        Write-ColorOutput "Error assigning tenant RBAC role '$RoleName' to group '$GroupName': $($_.Exception.Message)" "Red"
+        return $false
+    }
+}
+
+# Function to get current user
+function Get-CurrentUser {
+    try {
+        $currentUser = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/me" -Description "Getting current user" -IgnoreError
+        if ($currentUser) {
+            Write-ColorOutput "Current user: $($currentUser.displayName) ($($currentUser.userPrincipalName))" "Green"
+            return $currentUser
+        }
+        return $null
+    }
+    catch {
+        Write-ColorOutput "Error getting current user: $($_.Exception.Message)" "Red"
+        return $null
+    }
+}
+
+# Function to create or find Administrative Unit
+function Set-RestrictedAdminUnit {
+    param(
+        [string]$CurrentUserId,
+        [string]$TenantCode
+    )
+    
+    $adminUnitName = "$TenantCode-tenant-admin"
+    Write-ColorOutput "Looking for administrative unit '$adminUnitName'..." "Cyan"
+    
+    $adminUnits = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits" -Description "Getting administrative units" -IgnoreError
+    
+    $restrictedUnit = $null
+    if ($adminUnits -and $adminUnits.value) {
+        $restrictedUnit = $adminUnits.value | Where-Object { $_.displayName -eq $adminUnitName }
+    }
+    
+    if ($restrictedUnit) {
+        Write-ColorOutput "Found existing administrative unit: $($restrictedUnit.displayName)" "Green"
+        $restrictedAdminUnitId = $restrictedUnit.id
+    } else {
+        Write-ColorOutput "Creating new administrative unit: $adminUnitName" "Cyan"
+        
+        if ($WhatIf) {
+            Write-ColorOutput "WHATIF: Would create administrative unit '$adminUnitName'" "Yellow"
+            return "whatif-admin-unit-id"
+        }
+        
+        $adminUnitBody = @{
+            displayName = $adminUnitName
+            description = "Restricted administrative unit for tenant $TenantCode management operations"
+            visibility = "HiddenMembership"
+            isMemberManagementRestricted = $true
+        }
+        
+        $newAdminUnit = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits" -Body $adminUnitBody -Description "Creating administrative unit '$adminUnitName'"
+        
+        if (-not $newAdminUnit -or -not $newAdminUnit.id) {
+            Write-ColorOutput "Failed to create administrative unit" "Red"
+            return $null
+        }
+        
+        $restrictedAdminUnitId = $newAdminUnit.id
+        Write-ColorOutput "Created administrative unit: $($newAdminUnit.displayName) (ID: $restrictedAdminUnitId)" "Green"
+    }
+    
+    # Add current user with admin roles to the administrative unit
+    if ($CurrentUserId -and $restrictedAdminUnitId) {
+        Write-ColorOutput "Adding current user with admin roles to administrative unit..." "Cyan"
+        
+        if (-not $WhatIf) {
+            # First add user as member
+            $memberBody = @{
+                "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$CurrentUserId"
+            }
+            $addMember = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$restrictedAdminUnitId/members/`$ref" -Body $memberBody -Description "Adding user to administrative unit" -IgnoreError
+            
+            # Define roles to assign (scoped to AU) - NO Global Administrator on AU level!
+            $rolesToAssign = @{
+                "User Administrator" = "fe930be7-5e62-47db-91af-98c3a49a38b1"
+                "Groups Administrator" = "fdd7a751-b60b-444a-984c-02652fe8fa1c"
+                "Privileged Authentication Administrator" = "7be44c8a-adaf-4e2a-84d6-ab2649e08a13"
+                "License Administrator" = "4d6ac14f-3453-41d0-bef9-a3e0c569773a"
+            }
+            
+            # Assign each role to the user (scoped to AU)
+            foreach ($roleName in $rolesToAssign.Keys) {
+                $roleId = $rolesToAssign[$roleName]
+                
+                $roleAssignmentBody = @{
+                    "@odata.type" = "#microsoft.graph.unifiedRoleAssignment"
+                    roleDefinitionId = $roleId
+                    principalId = $CurrentUserId
+                    directoryScopeId = "/administrativeUnits/$restrictedAdminUnitId"
+                }
+                
+                $roleAssignment = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments" -Body $roleAssignmentBody -Description "Assigning $roleName role to user in AU" -IgnoreError
+                
+                if ($roleAssignment) {
+                    Write-ColorOutput "Successfully assigned $roleName role to current user in AU" "Green"
+                }
+            }
+        }
+    }
+    
+    return $restrictedAdminUnitId
+}
+
+# Function to assign Entra directory role to group
+function Set-EntraDirectoryRole {
+    param(
+        [string]$GroupId,
+        [string]$RoleDisplayName,
+        [string]$GroupDisplayName
+    )
+    
+    try {
+        if ($WhatIf) {
+            Write-ColorOutput "WHATIF: Would assign Entra role '$RoleDisplayName' to group '$GroupDisplayName'" "Yellow"
+            return
+        }
+        
+        # Get role definition
+        $roleDefinitions = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions?`$filter=displayName eq '$RoleDisplayName'" -Description "Getting role definition for '$RoleDisplayName'" -IgnoreError
+        
+        if (-not $roleDefinitions -or -not $roleDefinitions.value -or $roleDefinitions.value.Count -eq 0) {
+            Write-ColorOutput "Role '$RoleDisplayName' not found" "Red"
+            return
+        }
+        
+        $roleDefinitionId = $roleDefinitions.value[0].id
+        
+        # Check if assignment already exists
+        $existingAssignments = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$GroupId' and roleDefinitionId eq '$roleDefinitionId'" -Description "Checking existing role assignments" -IgnoreError
+        
+        if ($existingAssignments -and $existingAssignments.value -and $existingAssignments.value.Count -gt 0) {
+            Write-ColorOutput "Entra role '$RoleDisplayName' already assigned to group '$GroupDisplayName'" "Yellow"
+            return
+        }
+        
+        # Create role assignment
+        $roleAssignmentBody = @{
+            "@odata.type" = "#microsoft.graph.unifiedRoleAssignment"
+            roleDefinitionId = $roleDefinitionId
+            principalId = $GroupId
+            directoryScopeId = "/"
+        }
+        
+        $roleAssignment = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments" -Body $roleAssignmentBody -Description "Assigning Entra role '$RoleDisplayName' to group '$GroupDisplayName'"
+        
+        if ($roleAssignment) {
+            Write-ColorOutput "Successfully assigned Entra role '$RoleDisplayName' to group '$GroupDisplayName'" "Green"
+        } else {
+            Write-ColorOutput "Failed to assign Entra role '$RoleDisplayName' to group '$GroupDisplayName'" "Red"
+        }
+    }
+    catch {
+        Write-ColorOutput "Error assigning Entra role '$RoleDisplayName' to group '$GroupDisplayName': $($_.Exception.Message)" "Red"
+    }
+}
+
+# Function to update group administrative unit membership
+function Update-GroupAdminUnit {
+    param(
+        [string]$GroupId,
+        [string]$GroupDisplayName,
+        [string]$AdminUnitId
+    )
+    
+    if (-not $AdminUnitId -or $WhatIf) {
+        return
+    }
+    
+    try {
+        $memberBody = @{
+            "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$GroupId"
+        }
+        $addToUnit = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$AdminUnitId/members/`$ref" -Body $memberBody -Description "Adding group '$GroupDisplayName' to administrative unit" -IgnoreError
+        
+        if ($addToUnit) {
+            Write-ColorOutput "Added group '$GroupDisplayName' to administrative unit" "Green"
+        }
+    }
+    catch {
+        Write-ColorOutput "Error adding group '$GroupDisplayName' to administrative unit: $($_.Exception.Message)" "Red"
+    }
+}
+
+#
+# MAIN EXECUTION
+#
+
+Write-ColorOutput "=== Complete Entra ID Setup ===" "Cyan"
+
+# Load or initialize configuration
+Write-ColorOutput "Loading configuration from: $ConfigFile" "Cyan"
+
+$configExists = Test-Path $ConfigFile
+if (-not $configExists) {
+    if (-not $TenantCode) {
+        Write-ColorOutput "Config file does not exist and no TenantCode parameter provided." "Red"
+        Write-ColorOutput "Please provide -TenantCode parameter to create initial config or create the config file first." "Red"
+        exit 1
+    }
+    Write-ColorOutput "Config file does not exist. Will create new config based on TenantCode: $TenantCode" "Yellow"
+    $config = $null
+} else {
+    $config = Get-Configuration -Path $ConfigFile
+}
+
+# Determine tenant code
+if ($TenantCode) {
+    $tenantCode = $TenantCode
+    Write-ColorOutput "Using TenantCode from parameter: $tenantCode" "Green"
+} elseif ($config) {
+    # Support both old and new config structure
+    if ($config.tenantconfig -and $config.tenantconfig.tenantCode) {
+        $tenantCode = $config.tenantconfig.tenantCode
+    } elseif ($config.tenantCode) {
+        $tenantCode = $config.tenantCode
+    } else {
+        Write-ColorOutput "No tenantCode found in configuration. Please provide -TenantCode parameter." "Red"
+        exit 1
+    }
+    Write-ColorOutput "Using TenantCode from config: $tenantCode" "Green"
+} else {
+    Write-ColorOutput "No configuration loaded and no TenantCode parameter provided." "Red"
+    exit 1
+}
+
+if ($tenantCode -eq "unknown" -or -not $tenantCode) {
+    Write-ColorOutput "Invalid tenantCode. Please provide a valid tenant code." "Red"
+    exit 1
+}
+
+# Check if Azure CLI is available and logged in
+Write-ColorOutput "Checking Azure CLI availability and login status..." "Cyan"
+try {
+    if ($WhatIf) {
+        $accountInfo = az account show 2>&1 | ConvertFrom-Json -ErrorAction SilentlyContinue
+    } else {
+        $accountInfo = az account show | ConvertFrom-Json
+    }
+    
+    if (-not $accountInfo) {
+        Write-ColorOutput "Not logged in to Azure CLI. Please run: az login" "Red"
+        exit 1
+    }
+    
+    Write-ColorOutput "✓ Logged in to Azure CLI" "Green"
+    Write-ColorOutput "  - Account: $($accountInfo.user.name)" "White"
+    Write-ColorOutput "  - Subscription: $($accountInfo.name)" "White"
+    Write-ColorOutput "  - Tenant: $($accountInfo.tenantId)" "White"
+    
+    $subscriptionId = $accountInfo.id
+    $subscriptionPrefix = $subscriptionId.Split('-')[0]
+    Write-ColorOutput "  - Subscription prefix: $subscriptionPrefix" "White"
+    Write-ColorOutput "  - Tenant code: $tenantCode" "White"
+    
+    # Initialize or update config with current info
+    if (-not $config) {
+        # Create new config structure
+        $config = @{
+            tenantCode = $tenantCode
+            tenantId = $accountInfo.tenantId
+            subscriptionId = $subscriptionId
+            restrictedAdminUnitId = $null
+        }
+        Write-ColorOutput "Created new configuration structure" "Green"
+    } else {
+        # Update existing config - always use flat structure internally
+        $config = @{
+            tenantCode = $tenantCode
+            tenantId = $accountInfo.tenantId
+            subscriptionId = $subscriptionId
+            restrictedAdminUnitId = if ($config.tenantconfig -and $config.tenantconfig.restrictedAdminUnitId) { 
+                $config.tenantconfig.restrictedAdminUnitId 
+            } elseif ($config.restrictedAdminUnitId) {
+                $config.restrictedAdminUnitId
+            } else {
+                $null
+            }
+        }
+        Write-ColorOutput "Updated configuration with current subscription info" "Green"
+    }
+}
+catch {
+    Write-ColorOutput "Error checking Azure CLI: $($_.Exception.Message)" "Red"
+    exit 1
+}
+
+# Get current user for admin unit setup
+$currentUser = Get-CurrentUser
+if (-not $currentUser) {
+    Write-ColorOutput "Cannot proceed without current user information" "Red"
+    exit 1
+}
+
+# Setup Administrative Unit
+Write-ColorOutput "`nSetting up Administrative Unit..." "Cyan"
+$restrictedAdminUnitId = Set-RestrictedAdminUnit -CurrentUserId $currentUser.id -TenantCode $tenantCode
+
+if ($restrictedAdminUnitId) {
+    $config.restrictedAdminUnitId = $restrictedAdminUnitId
+}
+
+# Initialize hashtables to track processed groups
+$processedTenantGroups = @{}
+$processedSubscriptionGroups = @{}
+
+# Skip group creation if SetupEntraOnly is specified
+if (-not $SetupEntraOnly) {
+    Write-ColorOutput "`nStarting deployment of Entra groups using Microsoft Graph REST API..." "Cyan"
+
+    # Process tenant-level groups
+    Write-ColorOutput "`nProcessing tenant-level groups..." "Cyan"
+    foreach ($tenantGroup in $aTenantGroups) {
+        $groupName = $tenantGroup.name
+        $description = $tenantGroup.description
+        $roles = $tenantGroup.roles
+        
+        Write-ColorOutput "`nProcessing tenant group: $groupName" "Cyan"
+        
+        # Create group with role-assignable flag if it has roles
+        # Role-assignable groups are NOT added to AU (to allow member management)
+        # Non-role-assignable groups ARE added to AU
+        $hasRoles = $roles -and $roles.Count -gt 0
+        
+        if ($hasRoles) {
+            # Role-assignable group - do NOT add to AU
+            $group = New-GraphGroup -GroupName $groupName -Description $description -RoleAssignable:$true
+            Write-ColorOutput "Note: Role-assignable group - NOT added to AU (allows member management)" "Yellow"
+        } else {
+            # Regular group - add to AU
+            $group = New-GraphGroup -GroupName $groupName -Description $description -AdminUnitId $restrictedAdminUnitId
+        }
+        
+        if ($group) {
+            # Save only the group ID to processed groups hashtable
+            $processedTenantGroups[$groupName] = $group.id
+            
+            if ($hasRoles) {
+                Write-ColorOutput "Entra directory roles for group '$groupName' will be assigned (tenant-wide)" "Yellow"
+                foreach ($role in $roles) {
+                    Write-ColorOutput "  - $role" "White"
+                }
+                Write-ColorOutput "Group ID: $($group.id)" "White"
+            } else {
+                Write-ColorOutput "No roles defined for group '$groupName'" "Yellow"
+            }
+        }
+    }
+
+    # Process subscription-level groups - First create all groups
+    Write-ColorOutput "`nProcessing subscription-level groups..." "Cyan"
+    Write-ColorOutput "Step 1: Creating all subscription groups..." "Cyan"
+    
+    $groupsToAssignRbac = @()
+    
+    foreach ($subGroup in $aSubscriptionGroups) {
+        $baseName = $subGroup.name
+        $description = $subGroup.description
+        $rbacRoles = $subGroup.RBACroles
+        
+        # Generate the full group name with subscription prefix
+        $groupName = "sec-az-$subscriptionPrefix-$baseName"
+        
+        Write-ColorOutput "`nProcessing subscription group: $groupName" "Cyan"
+        
+        # Create group and add to administrative unit
+        $group = New-GraphGroup -GroupName $groupName -Description $description -AdminUnitId $restrictedAdminUnitId
+        
+        if ($group) {
+            # Save only the group ID to processed groups hashtable  
+            $processedSubscriptionGroups[$groupName] = $group.id
+            
+            # Store group info for RBAC assignment later
+            if ($rbacRoles -and $rbacRoles.Count -gt 0) {
+                $groupsToAssignRbac += @{
+                    GroupId = $group.id
+                    GroupName = $groupName
+                    Roles = $rbacRoles
+                }
+            } else {
+                Write-ColorOutput "No RBAC roles defined for group '$groupName'" "Yellow"
+            }
+        }
+    }
+    
+    # Wait for replication if any groups need RBAC assignments
+    if ($groupsToAssignRbac.Count -gt 0) {
+        Write-ColorOutput "`nStep 2: Waiting 15 seconds for Azure AD replication..." "Yellow"
+        Start-Sleep -Seconds 15
+        
+        Write-ColorOutput "Step 3: Assigning RBAC roles to subscription groups..." "Cyan"
+        foreach ($groupInfo in $groupsToAssignRbac) {
+            Write-ColorOutput "`nAssigning RBAC roles to $($groupInfo.GroupName)..." "Cyan"
+            foreach ($role in $groupInfo.Roles) {
+                Set-AzRoleAssignment -GroupObjectId $groupInfo.GroupId -RoleName $role -GroupName $groupInfo.GroupName -SubscriptionId $subscriptionId
+            }
+        }
+    }
+}
+
+# Process Entra directory role assignments
+Write-ColorOutput "`nProcessing Entra directory role assignments..." "Cyan"
+
+foreach ($tenantGroup in $aTenantGroups) {
+    $groupName = $tenantGroup.name
+    $roles = $tenantGroup.roles
+    
+    # Skip groups without roles
+    if (-not $roles -or $roles.Count -eq 0) {
+        Write-ColorOutput "Skipping group '$groupName' - no roles defined" "Yellow"
+        continue
+    }
+    
+    Write-ColorOutput "`nProcessing role-assignable group: $groupName" "Cyan"
+    
+    # Find the group by name
+    $existingGroup = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayName eq '$groupName'" -Description "Finding group '$groupName'"
+    
+    if ($existingGroup -and $existingGroup.value -and $existingGroup.value.Count -gt 0) {
+        $group = $existingGroup.value[0]
+        
+        # NOTE: Role-assignable groups are intentionally NOT added to the AU
+        # This allows member management through Azure Portal (Graph API limitation)
+        
+        # Assign Entra directory roles (tenant-wide, not AU-scoped)
+        foreach ($role in $roles) {
+            Set-EntraDirectoryRole -GroupId $group.id -RoleDisplayName $role -GroupDisplayName $group.displayName
+        }
+    } else {
+        Write-ColorOutput "Warning: Group '$groupName' not found. Please run this script without -SetupEntraOnly first." "Red"
+    }
+}
+
+# Process tenant-level RBAC role assignments for Azure Reservations
+Write-ColorOutput "`nProcessing tenant-level RBAC role assignments for Azure Reservations..." "Cyan"
+
+$reservationsRoleAssignments = @(
+    @{
+        GroupName = "sec-tenant-reservations-read"
+        RoleName = "Reservations Reader"
+        Scope = "/providers/Microsoft.Capacity"
+    },
+    @{
+        GroupName = "sec-tenant-reservations-admin"
+        RoleName = "Reservations Administrator"
+        Scope = "/providers/Microsoft.Capacity"
+    },
+    @{
+        GroupName = "sec-tenant-reservations-purchase"
+        RoleName = "Reservation Purchaser"
+        Scope = "/providers/Microsoft.Capacity"
+    }
+)
+
+foreach ($assignment in $reservationsRoleAssignments) {
+    Write-ColorOutput "`nAssigning '$($assignment.RoleName)' to group '$($assignment.GroupName)'..." "Cyan"
+    $result = Set-TenantRbacRole -GroupName $assignment.GroupName -RoleName $assignment.RoleName -Scope $assignment.Scope
+    
+    if (-not $result) {
+        Write-ColorOutput "Warning: Failed to assign role for group '$($assignment.GroupName)'" "Yellow"
+    }
+}
+
+# Save configuration
+if ((-not $SetupEntraOnly) -and ($configExists -or -not $WhatIf)) {
+    Save-ConfigurationFile -Path $ConfigFile -Config $config -ProcessedTenantGroups $processedTenantGroups -ProcessedSubscriptionGroups $processedSubscriptionGroups -SubscriptionPrefix $subscriptionPrefix
+    Write-ColorOutput "- Configuration saved to: $ConfigFile" "White"
+} else {
+    Write-ColorOutput "- Configuration not saved (SetupEntraOnly mode or WhatIf)" "Yellow"
+}
+
+Write-ColorOutput "`n=== Complete Entra ID Setup Finished ===" "Green"
+Write-ColorOutput "Summary:" "Cyan"
+Write-ColorOutput "✓ Current user: $($currentUser.displayName) ($($currentUser.userPrincipalName))" "White"
+if ($restrictedAdminUnitId) {
+    Write-ColorOutput "✓ Administrative Unit ($tenantCode-tenant-admin): $restrictedAdminUnitId" "White"
+    Write-ColorOutput "✓ Current user assigned roles in AU: User Administrator, Groups Administrator" "White"
+}
+
+if (-not $SetupEntraOnly) {
+    Write-ColorOutput "✓ Deployment completed!" "White"
+    Write-ColorOutput "  - Tenant groups: $($aTenantGroups.Count)" "White"
+    Write-ColorOutput "  - Subscription groups: $($aSubscriptionGroups.Count) (prefixed with 'sec-az-$subscriptionPrefix-')" "White"
+    
+    if ($restrictedAdminUnitId) {
+        Write-ColorOutput "  - Groups added to Administrative Unit" "White"
+    }
+}
+
+Write-ColorOutput "✓ Entra directory roles assigned to role-assignable groups" "White"
+
+Write-ColorOutput "`nTo verify the created groups, run:" "Cyan"
+Write-ColorOutput "az ad group list --output table" "White"
