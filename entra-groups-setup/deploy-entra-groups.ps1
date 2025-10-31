@@ -245,16 +245,35 @@ function Invoke-GraphRequest {
         
         # Add Content-Type header for POST, PUT, PATCH requests
         if ($Method -in @("POST", "PUT", "PATCH")) {
-            $azArgs += @("--headers", "Content-Type=application/json")
+            # Use explicit header format that works on both Windows and Linux
+            $azArgs += "--headers"
+            $azArgs += "Content-Type=application/json"
         }
         
         if ($Body) {
             $bodyJson = $Body | ConvertTo-Json -Depth 10 -Compress
-            $azArgs += @("--body", $bodyJson)
+            
+            # Windows PowerShell has issues with JSON in --body parameter
+            # Use temporary file approach for cross-platform compatibility
+            $tempFile = [System.IO.Path]::GetTempFileName()
+            try {
+                $bodyJson | Out-File -FilePath $tempFile -Encoding UTF8 -NoNewline
+                $azArgs += "--body"
+                $azArgs += "@$tempFile"
+                
+                $result = & az @azArgs 2>&1
+                $exitCode = $LASTEXITCODE
+            }
+            finally {
+                if (Test-Path $tempFile) {
+                    Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+                }
+            }
         }
-        
-        $result = & az @azArgs 2>&1
-        $exitCode = $LASTEXITCODE
+        else {
+            $result = & az @azArgs 2>&1
+            $exitCode = $LASTEXITCODE
+        }
         
         if ($exitCode -ne 0 -and -not $IgnoreError) {
             Write-ColorOutput "Error executing Graph request: $result" "Red"
