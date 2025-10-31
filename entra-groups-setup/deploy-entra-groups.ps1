@@ -23,7 +23,8 @@ param(
     [switch]$WhatIf,
     [string]$ConfigFile,
     [string]$TenantCode,
-    [switch]$SetupEntraOnly
+    [switch]$SetupEntraOnly,
+    [switch]$ShowPassword
 )
 
 # Hard-coded group definitions for standalone usage (names without sec-tenant- prefix)
@@ -465,7 +466,6 @@ function Get-CurrentUser {
 # Function to create or find Administrative Unit
 function Set-RestrictedAdminUnit {
     param(
-        [string]$CurrentUserId,
         [string]$TenantCode
     )
     
@@ -506,45 +506,6 @@ function Set-RestrictedAdminUnit {
         
         $restrictedAdminUnitId = $newAdminUnit.id
         Write-ColorOutput "Created administrative unit: $($newAdminUnit.displayName) (ID: $restrictedAdminUnitId)" "Green"
-    }
-    
-    # Add current user with admin roles to the administrative unit
-    if ($CurrentUserId -and $restrictedAdminUnitId) {
-        Write-ColorOutput "Adding current user with admin roles to administrative unit..." "Cyan"
-        
-        if (-not $WhatIf) {
-            # First add user as member
-            $memberBody = @{
-                "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$CurrentUserId"
-            }
-            $addMember = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$restrictedAdminUnitId/members/`$ref" -Body $memberBody -Description "Adding user to administrative unit" -IgnoreError
-            
-            # Define roles to assign (scoped to AU) - NO Global Administrator on AU level!
-            $rolesToAssign = @{
-                "User Administrator" = "fe930be7-5e62-47db-91af-98c3a49a38b1"
-                "Groups Administrator" = "fdd7a751-b60b-444a-984c-02652fe8fa1c"
-                "Privileged Authentication Administrator" = "7be44c8a-adaf-4e2a-84d6-ab2649e08a13"
-                "License Administrator" = "4d6ac14f-3453-41d0-bef9-a3e0c569773a"
-            }
-            
-            # Assign each role to the user (scoped to AU)
-            foreach ($roleName in $rolesToAssign.Keys) {
-                $roleId = $rolesToAssign[$roleName]
-                
-                $roleAssignmentBody = @{
-                    "@odata.type" = "#microsoft.graph.unifiedRoleAssignment"
-                    roleDefinitionId = $roleId
-                    principalId = $CurrentUserId
-                    directoryScopeId = "/administrativeUnits/$restrictedAdminUnitId"
-                }
-                
-                $roleAssignment = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments" -Body $roleAssignmentBody -Description "Assigning $roleName role to user in AU" -IgnoreError
-                
-                if ($roleAssignment) {
-                    Write-ColorOutput "Successfully assigned $roleName role to current user in AU" "Green"
-                }
-            }
-        }
     }
     
     return $restrictedAdminUnitId
@@ -651,8 +612,13 @@ function New-MspAdminUser {
     $existingUser = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/users?`$filter=userPrincipalName eq '$userPrincipalName'" -Description "Checking if user '$userPrincipalName' exists" -IgnoreError
     
     if ($existingUser -and $existingUser.value -and $existingUser.value.Count -gt 0) {
-        Write-ColorOutput "MSP admin user already exists: $userPrincipalName" "Yellow"
-        return $existingUser.value[0]
+        Write-ColorOutput "MSP admin user already exists: $userPrincipalName" "Green"
+        # Return existing user without password
+        return @{
+            user = $existingUser.value[0]
+            password = $null
+            isNew = $false
+        }
     }
     
     if ($WhatIf) {
@@ -660,8 +626,27 @@ function New-MspAdminUser {
         return $null
     }
     
-    # Generate random password (GUID)
-    $password = [System.Guid]::NewGuid().ToString()
+    # Generate complex random password: 16 characters with uppercase, lowercase, digits, and special chars
+    $uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    $lowercase = "abcdefghijklmnopqrstuvwxyz"
+    $digits = "0123456789"
+    $special = "!@#$%^&*-_=+"
+    
+    # Ensure at least one of each type
+    $passwordChars = @()
+    $passwordChars += $uppercase[(Get-Random -Maximum $uppercase.Length)]
+    $passwordChars += $lowercase[(Get-Random -Maximum $lowercase.Length)]
+    $passwordChars += $digits[(Get-Random -Maximum $digits.Length)]
+    $passwordChars += $special[(Get-Random -Maximum $special.Length)]
+    
+    # Fill remaining 12 characters randomly from all sets
+    $allChars = $uppercase + $lowercase + $digits + $special
+    for ($i = 0; $i -lt 12; $i++) {
+        $passwordChars += $allChars[(Get-Random -Maximum $allChars.Length)]
+    }
+    
+    # Shuffle the password characters
+    $password = -join ($passwordChars | Get-Random -Count $passwordChars.Count)
     
     # Create user
     $userBody = @{
@@ -680,13 +665,178 @@ function New-MspAdminUser {
     
     if ($newUser) {
         Write-ColorOutput "Successfully created MSP admin user: $userPrincipalName" "Green"
-        Write-ColorOutput "Initial password: $password" "Yellow"
-        Write-ColorOutput "IMPORTANT: Save this password securely! User must change password on first login." "Yellow"
-        return $newUser
+        # Return user info with password
+        return @{
+            user = $newUser
+            password = $password
+            isNew = $true
+        }
     } else {
         Write-ColorOutput "Failed to create MSP admin user" "Red"
         return $null
     }
+}
+
+# Function to add MSP admin user to AU with roles
+function Add-MspUserToAdminUnit {
+    param(
+        [string]$UserId,
+        [string]$AdminUnitId
+    )
+    
+    if (-not $UserId -or -not $AdminUnitId) {
+        Write-ColorOutput "Warning: Cannot add user to AU - missing UserId or AdminUnitId" "Yellow"
+        return $false
+    }
+    
+    Write-ColorOutput "`nAdding MSP admin user to Administrative Unit with roles..." "Cyan"
+    
+    if ($WhatIf) {
+        Write-ColorOutput "WHATIF: Would add user to AU and assign roles" "Yellow"
+        return $true
+    }
+    
+    # First add user as member of AU
+    $memberBody = @{
+        "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$UserId"
+    }
+    $null = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$AdminUnitId/members/`$ref" -Body $memberBody -Description "Adding MSP user to administrative unit" -IgnoreError
+    
+    # Define roles to assign (scoped to AU)
+    $rolesToAssign = @{
+        "User Administrator" = "fe930be7-5e62-47db-91af-98c3a49a38b1"
+        "Groups Administrator" = "fdd7a751-b60b-444a-984c-02652fe8fa1c"
+    }
+    
+    # Assign each role to the user (scoped to AU)
+    foreach ($roleName in $rolesToAssign.Keys) {
+        $roleId = $rolesToAssign[$roleName]
+        
+        $roleAssignmentBody = @{
+            "@odata.type" = "#microsoft.graph.unifiedRoleAssignment"
+            roleDefinitionId = $roleId
+            principalId = $UserId
+            directoryScopeId = "/administrativeUnits/$AdminUnitId"
+        }
+        
+        $roleAssignment = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments" -Body $roleAssignmentBody -Description "Assigning $roleName role to MSP user in AU" -IgnoreError
+        
+        if ($roleAssignment) {
+            Write-ColorOutput "✓ Assigned $roleName role to MSP user (AU-scoped)" "Green"
+        }
+    }
+    
+    return $true
+}
+
+# Function to create or verify customer admin user
+function New-CustomerAdminUser {
+    param(
+        [string]$TenantCode,
+        [string]$OnMicrosoftDomain
+    )
+    
+    if (-not $OnMicrosoftDomain) {
+        Write-ColorOutput "Warning: Cannot create customer admin user without onmicrosoft.com domain" "Yellow"
+        return $null
+    }
+    
+    $displayName = "$TenantCode-cust-admin"
+    $userPrincipalName = "$displayName@$OnMicrosoftDomain"
+    
+    Write-ColorOutput "`nChecking customer admin user: $userPrincipalName" "Cyan"
+    
+    # Check if user already exists
+    $existingUser = Invoke-GraphRequest -Method "GET" -Uri "https://graph.microsoft.com/v1.0/users/$userPrincipalName" -Description "Checking if user '$userPrincipalName' exists" -IgnoreError
+    
+    if ($existingUser) {
+        Write-ColorOutput "Customer admin user already exists: $userPrincipalName" "Green"
+        return @{
+            user = $existingUser
+            password = $null
+            isNew = $false
+        }
+    }
+    
+    if ($WhatIf) {
+        Write-ColorOutput "WHATIF: Would create user '$userPrincipalName'" "Yellow"
+        return $null
+    }
+    
+    # Generate complex random password: 16 characters
+    $uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    $lowercase = "abcdefghijklmnopqrstuvwxyz"
+    $digits = "0123456789"
+    $special = "!@#$%^&*-_=+"
+    
+    $passwordChars = @()
+    $passwordChars += $uppercase[(Get-Random -Maximum $uppercase.Length)]
+    $passwordChars += $lowercase[(Get-Random -Maximum $lowercase.Length)]
+    $passwordChars += $digits[(Get-Random -Maximum $digits.Length)]
+    $passwordChars += $special[(Get-Random -Maximum $special.Length)]
+    
+    $allChars = $uppercase + $lowercase + $digits + $special
+    for ($i = 0; $i -lt 12; $i++) {
+        $passwordChars += $allChars[(Get-Random -Maximum $allChars.Length)]
+    }
+    
+    $password = -join ($passwordChars | Get-Random -Count $passwordChars.Count)
+    
+    # Create user
+    $userBody = @{
+        accountEnabled = $true
+        displayName = $displayName
+        mailNickname = "$TenantCode-cust-admin"
+        userPrincipalName = $userPrincipalName
+        passwordProfile = @{
+            forceChangePasswordNextSignIn = $true
+            password = $password
+        }
+        usageLocation = "BE"
+    }
+    
+    $newUser = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/users" -Body $userBody -Description "Creating user '$userPrincipalName'"
+    
+    if ($newUser) {
+        Write-ColorOutput "Successfully created customer admin user: $userPrincipalName" "Green"
+        return @{
+            user = $newUser
+            password = $password
+            isNew = $true
+        }
+    } else {
+        Write-ColorOutput "Failed to create customer admin user" "Red"
+        return $null
+    }
+}
+
+# Function to add customer admin user to AU (member only, no roles)
+function Add-CustomerUserToAdminUnit {
+    param(
+        [string]$UserId,
+        [string]$AdminUnitId
+    )
+    
+    if (-not $UserId -or -not $AdminUnitId) {
+        Write-ColorOutput "Warning: Cannot add user to AU - missing UserId or AdminUnitId" "Yellow"
+        return $false
+    }
+    
+    Write-ColorOutput "Adding customer admin user to Administrative Unit..." "Cyan"
+    
+    if ($WhatIf) {
+        Write-ColorOutput "WHATIF: Would add user to AU as member" "Yellow"
+        return $true
+    }
+    
+    # Add user as member of AU (no roles)
+    $memberBody = @{
+        "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$UserId"
+    }
+    $null = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$AdminUnitId/members/`$ref" -Body $memberBody -Description "Adding customer user to administrative unit" -IgnoreError
+    
+    Write-ColorOutput "✓ Customer admin user added to AU (member only)" "Green"
+    return $true
 }
 
 #
@@ -750,29 +900,56 @@ $script:weTriggeredLogin = $false
 # Check if Azure CLI is available and logged in
 Write-ColorOutput "Checking Azure CLI availability and login status..." "Cyan"
 try {
-    if ($WhatIf) {
-        $accountInfo = az account show 2>&1 | ConvertFrom-Json -ErrorAction SilentlyContinue
-    } else {
-        $accountInfo = az account show 2>&1 | ConvertFrom-Json -ErrorAction SilentlyContinue
+    # First check if basic Azure CLI login works
+    $accountInfo = $null
+    $accountOutput = & az account show 2>&1
+    
+    if ($LASTEXITCODE -eq 0) {
+        try {
+            $accountInfo = $accountOutput | ConvertFrom-Json -ErrorAction SilentlyContinue
+        }
+        catch {
+            # JSON parsing failed, treat as not logged in
+            $accountInfo = $null
+        }
     }
     
-    if (-not $accountInfo -or $LASTEXITCODE -ne 0) {
-        Write-ColorOutput "Not logged in to Azure CLI. Starting device code login..." "Yellow"
+    $needsLogin = $false
+    
+    if (-not $accountInfo) {
+        Write-ColorOutput "Not logged in to Azure CLI" "Yellow"
+        $needsLogin = $true
+    } else {
+        # Account exists, but test if Graph API token works
+        Write-ColorOutput "Testing Graph API access..." "Cyan"
+        $null = & az rest --method GET --url "https://graph.microsoft.com/v1.0/me" 2>&1
+        
+        if ($LASTEXITCODE -ne 0) {
+            Write-ColorOutput "Graph API token expired or invalid" "Yellow"
+            $needsLogin = $true
+        } else {
+            Write-ColorOutput "✓ Graph API access confirmed" "Green"
+        }
+    }
+    
+    if ($needsLogin) {
         Write-ColorOutput "" "White"
-        Write-ColorOutput "=== Device Code Authentication ===" "Cyan"
-        Write-ColorOutput "A browser window will open for you to sign in." "White"
+        Write-ColorOutput "=== Device Code Authentication Required ===" "Cyan"
         Write-ColorOutput "Please use your Global Administrator account." "White"
         Write-ColorOutput "" "White"
         
-        $loginResult = & az login --use-device-code 2>&1
+        # Execute az login and let it show its output directly to user
+        & az login --use-device-code
         
         if ($LASTEXITCODE -ne 0) {
-            Write-ColorOutput "Login failed: $loginResult" "Red"
+            Write-ColorOutput "" "White"
+            Write-ColorOutput "Login failed" "Red"
             exit 1
         }
         
         # Mark that we triggered the login
         $script:weTriggeredLogin = $true
+        Write-ColorOutput "" "White"
         Write-ColorOutput "✓ Login successful" "Green"
         
         # Get account info after login
@@ -843,14 +1020,30 @@ if ($onMicrosoftDomain) {
 
 # Setup Administrative Unit
 Write-ColorOutput "`nSetting up Administrative Unit..." "Cyan"
-$restrictedAdminUnitId = Set-RestrictedAdminUnit -CurrentUserId $currentUser.id -TenantCode $tenantCode
+$restrictedAdminUnitId = Set-RestrictedAdminUnit -TenantCode $tenantCode
 
 if ($restrictedAdminUnitId) {
     $config.restrictedAdminUnitId = $restrictedAdminUnitId
 }
 
 # Create or verify MSP admin user
-$mspAdminUser = New-MspAdminUser -TenantCode $tenantCode -OnMicrosoftDomain $onMicrosoftDomain
+$mspAdminUserResult = New-MspAdminUser -TenantCode $tenantCode -OnMicrosoftDomain $onMicrosoftDomain
+
+# Add MSP user to AU with roles if user was created
+if ($mspAdminUserResult -and $mspAdminUserResult.isNew -and $restrictedAdminUnitId) {
+    $auAdded = Add-MspUserToAdminUnit -UserId $mspAdminUserResult.user.id -AdminUnitId $restrictedAdminUnitId
+    if ($auAdded) {
+        Write-ColorOutput "✓ MSP admin user added to AU with User Administrator and Groups Administrator roles (AU-scoped)" "Green"
+    }
+}
+
+# Create or verify customer admin user
+$customerAdminUserResult = New-CustomerAdminUser -TenantCode $tenantCode -OnMicrosoftDomain $onMicrosoftDomain
+
+# Add customer user to AU (member only, no roles) if user was created
+if ($customerAdminUserResult -and $customerAdminUserResult.isNew -and $restrictedAdminUnitId) {
+    $null = Add-CustomerUserToAdminUnit -UserId $customerAdminUserResult.user.id -AdminUnitId $restrictedAdminUnitId
+}
 
 # Initialize hashtables to track processed groups
 $processedTenantGroups = @{}
@@ -1030,9 +1223,47 @@ if ((-not $SetupEntraOnly) -and ($configExists -or -not $WhatIf)) {
 Write-ColorOutput "`n=== Complete Entra ID Setup Finished ===" "Green"
 Write-ColorOutput "Summary:" "Cyan"
 Write-ColorOutput "✓ Current user: $($currentUser.displayName) ($($currentUser.userPrincipalName))" "White"
+
+# Show MSP admin user info if created
+if ($mspAdminUserResult -and $mspAdminUserResult.user) {
+    $mspUserName = $mspAdminUserResult.user.userPrincipalName
+    if ($mspAdminUserResult.isNew) {
+        Write-ColorOutput "✓ MSP admin user created: $mspUserName" "Green"
+        if ($ShowPassword -and $mspAdminUserResult.password) {
+            Write-ColorOutput "  Password: $($mspAdminUserResult.password)" "Yellow"
+            Write-ColorOutput "  IMPORTANT: User must change password on first login" "Yellow"
+        } elseif (-not $ShowPassword) {
+            Write-ColorOutput "  Use -ShowPassword parameter to display initial password" "Cyan"
+        }
+        if ($restrictedAdminUnitId) {
+            Write-ColorOutput "  Added to Administrative Unit with User Administrator and Groups Administrator roles (AU-scoped)" "Cyan"
+        }
+    } else {
+        Write-ColorOutput "✓ MSP admin user exists: $mspUserName" "Green"
+    }
+}
+
+# Show customer admin user info if created
+if ($customerAdminUserResult -and $customerAdminUserResult.user) {
+    $custUserName = $customerAdminUserResult.user.userPrincipalName
+    if ($customerAdminUserResult.isNew) {
+        Write-ColorOutput "✓ Customer admin user created: $custUserName" "Green"
+        if ($ShowPassword -and $customerAdminUserResult.password) {
+            Write-ColorOutput "  Password: $($customerAdminUserResult.password)" "Yellow"
+            Write-ColorOutput "  IMPORTANT: User must change password on first login" "Yellow"
+        } elseif (-not $ShowPassword) {
+            Write-ColorOutput "  Use -ShowPassword parameter to display initial password" "Cyan"
+        }
+        if ($restrictedAdminUnitId) {
+            Write-ColorOutput "  Added to Administrative Unit (member only)" "Cyan"
+        }
+    } else {
+        Write-ColorOutput "✓ Customer admin user exists: $custUserName" "Green"
+    }
+}
+
 if ($restrictedAdminUnitId) {
     Write-ColorOutput "✓ Administrative Unit ($tenantCode-tenant-admin): $restrictedAdminUnitId" "White"
-    Write-ColorOutput "✓ Current user assigned roles in AU: User Administrator, Groups Administrator" "White"
 }
 
 if (-not $SetupEntraOnly) {

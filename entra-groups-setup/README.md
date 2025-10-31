@@ -1,210 +1,182 @@
-# Entra Groups Setup - PowerShell
+# Customer Roles Deployment
 
-Complete deployment script for creating Entra ID groups and assigning proper roles for tenant and subscription management.
+Dit script deployment systeem zorgt voor het aanmaken van Entra ID groepen en het toewijzen van de juiste rollen voor tenant en subscription management.
 
-## Prerequisites
+## Quick Start - Azure Cloud Shell (Browser)
 
-- **PowerShell 7+** installed on your local machine
-- **Azure CLI** installed and available in PATH
-- **Global Administrator** rights in Entra ID
-- **Subscription Owner** rights on target subscription
+De snelste manier om te starten is via Azure Cloud Shell in je browser:
 
-### Installation
+1. Open [Azure Cloud Shell](https://shell.azure.com) in je browser
+2. Selecteer **PowerShell** als shell type
+3. Kopieer en plak het volgende commando:
 
-**PowerShell 7+:**
-```bash
-# Windows
-winget install Microsoft.PowerShell
-
-# macOS
-brew install --cask powershell
-
-# Linux
-# See: https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-linux
-```
-
-**Azure CLI:**
-```bash
-# Windows
-winget install Microsoft.AzureCLI
-
-# macOS
-brew install azure-cli
-
-# Linux
-curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-```
-
-## Quick Start
-
-1. **Download the script:**
 ```powershell
-# Download to current directory
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/CXNSMB/onboarding/main/entra-groups-setup/deploy-entra-groups.ps1" -OutFile "deploy-entra-groups.ps1"
+# Download en voer het script uit (zonder parameters - geeft instructies)
+iwr 'https://raw.githubusercontent.com/CXNSMB/onboarding/main/entra-groups-setup/deploy-entra-groups.ps1' | iex
 ```
 
-2. **Run the script:**
+4. Je krijgt een foutmelding omdat geen TenantCode parameter is meegegeven
+5. Druk op pijltje omhoog ↑ om het commando terug te halen
+6. Voeg `-TenantCode "jouw-tenant-code"` toe aan het einde:
+
 ```powershell
-# First run - creates groups and config file
-./deploy-entra-groups.ps1 -TenantCode "your-tenant-code"
+# Met TenantCode parameter
+iwr 'https://raw.githubusercontent.com/CXNSMB/onboarding/main/entra-groups-setup/deploy-entra-groups.ps1' | iex -TenantCode "jouw-tenant-code"
 ```
 
-The script will:
-- ✅ Check if you're logged in to Azure CLI
-- ✅ If not logged in → automatically trigger device code login
-- ✅ Execute all setup tasks
-- ✅ If login was triggered by the script → automatically logout at the end
+Vervang `"jouw-tenant-code"` met je daadwerkelijke tenant code (bijv. "7qx45m").
 
-> 💡 **Note:** If you're already logged in with `az login`, the script will use your existing session and will NOT logout at the end.
+### Alternatief: Download eerst, voer later uit
 
-## Authentication Behavior
+Als je het script wilt bekijken voordat je het uitvoert:
 
-The script intelligently handles authentication:
+```powershell
+# Download het script
+iwr 'https://raw.githubusercontent.com/CXNSMB/onboarding/main/entra-groups-setup/deploy-entra-groups.ps1' -OutFile 'deploy-entra-groups.ps1'
 
-| Scenario | Script Behavior |
-|----------|----------------|
-| **Not logged in** | Triggers `az login --use-device-code` → Executes script → Logs out automatically |
-| **Already logged in** | Uses existing session → Executes script → Does NOT logout |
+# Bekijk het script
+cat deploy-entra-groups.ps1
 
-This ensures your existing Azure CLI sessions are never disrupted.
+# Voer het uit
+./deploy-entra-groups.ps1 -TenantCode "jouw-tenant-code"
+```
 
-## Features
+## Beschikbare Scripts
 
-### `deploy-entra-groups.ps1` - Complete Setup Script
-**Standalone PowerShell script** that handles all Entra ID setup using Microsoft Graph REST API via Azure CLI.
+### `deploy-entra-groups.ps1` - Unified Complete Setup Script
+**Standalone script** dat alle Entra ID setup doet met Microsoft Graph REST API via Azure CLI. Geen PowerShell modules vereist.
 
 **Features:**
-- ✅ Hard-coded group definitions (standalone, no external files needed)
-- ✅ Uses only Azure CLI (no PowerShell modules required)
-- ✅ Supports multiple subscriptions in one config file
-- ✅ Creates Restricted Administrative Unit
-- ✅ Assigns AU-scoped roles to calling user
-- ✅ All groups in AU with HiddenMembership
-- ✅ Tenant-level Entra directory roles
-- ✅ Subscription-level RBAC roles
-- ✅ Azure Reservations RBAC roles (tenant-level)
-- ✅ 15 second replication wait (prevents errors!)
-- ✅ Automatic login/logout management
+- ✅ Hard-coded groep definities (standalone, geen externe bestanden nodig)
+- ✅ Gebruikt alleen Azure CLI (geen PowerShell modules)
+- ✅ Ondersteunt meerdere subscriptions in één config.json
+- ✅ Maakt Restricted Administrative Unit aan
+- ✅ Maakt MSP admin user aan met AU-scoped roles (User Administrator, Groups Administrator)
+- ✅ Maakt customer admin user aan als AU member (geen roles)
+- ✅ Automatische login/logout met device code flow
+- ✅ Alle groepen in AU met HiddenMembership
+- ✅ Tenant-level Entra directory rollen
+- ✅ Subscription-level RBAC rollen
+- ✅ Azure Reservations RBAC rollen (tenant-level)
 
-## Usage
+## Vereisten
 
-### 1. Ensure you're in the correct subscription
+- **Global Administrator** rechten in Entra ID
+- **Subscription Owner** rechten op de doelsubscriptie
+- **Azure CLI** geïnstalleerd en ingelogd (in Cloud Shell al beschikbaar)
+- **Geen PowerShell modules vereist**
+
+## Gebruik (Lokaal of in Cloud Shell Storage)
+
+### 1. Zorg dat je bent ingelogd in de juiste subscription
 ```powershell
-# Check current context
+# Controleer huidige context
 az account show
 
-# Switch to desired subscription if needed
+# Wissel naar gewenste subscription indien nodig
 az account set --subscription "your-subscription-id"
 ```
 
-### 2. First run (new tenant)
+### 2. Eerste keer uitvoeren (nieuwe tenant)
 ```powershell
-# Execute with TenantCode parameter
+# Voer uit met TenantCode parameter (wachtwoorden worden NIET getoond)
 ./deploy-entra-groups.ps1 -TenantCode "7qx45m"
+
+# Of met wachtwoorden in output (voor initiële setup)
+./deploy-entra-groups.ps1 -TenantCode "7qx45m" -ShowPassword
 ```
 
-This creates:
+Dit maakt:
 - Administrative Unit: `7qx45m-tenant-admin`
-- Tenant groups: `sec-tenant-7qx45m-*`
-- Subscription groups: `sec-az-7qx45m-<prefix>-*`
-- `7qx45m-config.json` file
+- MSP admin user: `7qx45m-cxnmsp-admin@<domain>` (met AU-scoped rollen)
+- Customer admin user: `7qx45m-cust-admin@<domain>` (als AU member)
+- Tenant groepen: `sec-tenant-*`
+- Subscription groepen: `sec-az-<prefix>-*`
+- `<tenantcode>-config.json` bestand
 
-### 3. Add another subscription
+### 3. Extra subscription toevoegen
 ```powershell
-# Switch to another subscription
-az account set --subscription "other-subscription-id"
+# Wissel naar andere subscription
+az account set --subscription "andere-subscription-id"
 
-# Run script (reads TenantCode from config file)
+# Voer script uit (leest TenantCode uit config.json)
 ./deploy-entra-groups.ps1
 ```
 
-The script automatically recognizes it's the same tenant and adds the subscription to existing config.
+Het script herkent automatisch dat het om dezelfde tenant gaat en voegt de subscription toe aan de bestaande config.
 
-### 4. WhatIf mode (test without changes)
+### 4. WhatIf mode (test zonder wijzigingen)
 ```powershell
 ./deploy-entra-groups.ps1 -TenantCode "7qx45m" -WhatIf
 ```
 
-### 5. Entra-only mode (skip subscription setup)
-```powershell
-./deploy-entra-groups.ps1 -TenantCode "7qx45m" -SetupEntraOnly
-```
-
-## What does the script do?
+## Wat doet het script?
 
 ### Administrative Unit (AU)
-- Creates a **Restricted Administrative Unit**: `<tenantcode>-tenant-admin`
+- Maakt een **Restricted Administrative Unit** aan: `<tenantcode>-tenant-admin`
 - **isMemberManagementRestricted**: `true` (restricted management)
-- **Visibility**: `HiddenMembership` (only AU admins see members)
-- **Calling user receives AU-scoped roles**:
-  - User Administrator
-  - Groups Administrator
-  - Privileged Authentication Administrator
-  - License Administrator
+- **Visibility**: `HiddenMembership` (alleen AU admins zien members)
+- **MSP admin user** (`<tenantcode>-cxnmsp-admin@<onmicrosoft.domain>`):
+  - Wordt aangemaakt met complex wachtwoord (16 tekens)
+  - Toegevoegd aan AU met AU-scoped rollen:
+    - User Administrator
+    - Groups Administrator
+- **Customer admin user** (`<tenantcode>-cust-admin@<onmicrosoft.domain>`):
+  - Wordt aangemaakt met complex wachtwoord (16 tekens)
+  - Toegevoegd aan AU als member (geen rollen)
 
-### Tenant Level Groups
-The script creates the following tenant-level groups and assigns roles:
+### Tenant Level Groepen
+Het script maakt de volgende tenant-level groepen aan en wijst rollen toe:
 
-**Groups with Entra Directory Roles (tenant-wide):**
-- `sec-tenant-{code}-dailyadmin` - Daily operations
+**Groepen met Entra Directory Rollen (tenant-wide):**
+- `sec-tenant-dailyadmin` - Daily operations
   - User Administrator
   - Groups Administrator
-- `sec-tenant-{code}-elevadmin` - Elevated roles
+- `sec-tenant-privadmin` - Privileged roles
   - User Administrator
   - Groups Administrator
+  - Privileged Role Administrator
   - Security Administrator
   - Application Administrator
   - Global Reader
-  - License Administrator
-  - Authentication Administrator
-  - Authentication Policy Administrator
-  - Privileged Authentication Administrator
-  - Conditional Access Administrator
-- `sec-tenant-{code}-sharepoint-admin` - SharePoint Administrator
-- `sec-tenant-{code}-intune-admin` - Intune Administrator
-- `sec-tenant-{code}-teams-admin` - Teams Administrator
-- `sec-tenant-{code}-privileged-role-admin` - Privileged Role Administrator
 
-**Groups with Azure Reservations RBAC Roles (tenant-level, scope: `/providers/Microsoft.Capacity`):**
-- `sec-tenant-{code}-reservations-read` → Reservations Reader
-- `sec-tenant-{code}-reservations-admin` → Reservations Administrator
-- `sec-tenant-{code}-reservations-purchase` → Reservation Purchaser
+**Groepen met Azure Reservations RBAC Rollen (tenant-level, scope: `/providers/Microsoft.Capacity`):**
+- `sec-tenant-reservations-read` → Reservations Reader
+- `sec-tenant-reservations-admin` → Reservations Administrator
+- `sec-tenant-reservations-purchase` → Reservation Purchaser
 
-**Informational group:**
-- `sec-tenant-{code}-break-glass` - Break glass accounts (no roles)
+**Informational groep:**
+- `sec-tenant-break-glass` - Break glass accounts (geen rollen)
 
-### Subscription Level Groups
-For each subscription, groups are created with pattern `sec-az-{code}-<subscription-prefix>-<role>`:
+### Subscription Level Groepen
+Voor elke subscription worden groepen aangemaakt met het patroon `sec-az-<subscription-prefix>-<role>`:
 
-- `sec-az-{code}-xxx-reader` → Reader
-- `sec-az-{code}-xxx-dailyadmin` → Reader, Backup Reader, Desktop Virtualization Virtual Machine Contributor, Desktop Virtualization User Session Operator, DNS Zone Contributor
-- `sec-az-{code}-xxx-contributor` → Contributor
-- `sec-az-{code}-xxx-costreader` → Cost Management Reader
-- `sec-az-{code}-xxx-sec-uaa` → User Access Administrator
-- `sec-az-{code}-xxx-owner` → Owner
+- `sec-az-xxx-reader` → Reader
+- `sec-az-xxx-dailyadmin` → Reader, Backup Reader, Desktop Virtualization VM Contributor, Desktop Virtualization User Session Operator
+- `sec-az-xxx-contributor` → Contributor
+- `sec-az-xxx-costreader` → Cost Management Reader
+- `sec-az-xxx-sec-uaa` → User Access Administrator
+- `sec-az-xxx-owner` → Owner
 
-Where `xxx` is the first part of subscription ID (up to first hyphen).
+Waarbij `xxx` de eerste 8 karakters van de subscription ID is (tot eerste streepje).
 
-### Config File Structure
-The script saves all information in `{tenantcode}-config.json`:
+### Config.json Structuur
+Het script bewaart alle informatie in `config.json`:
 ```json
 {
   "tenantconfig": {
     "tenantCode": "7qx45m",
     "tenantId": "...",
-    "onMicrosoftDomain": "7qx45m.onmicrosoft.com",
     "restrictedAdminUnitId": "...",
-    "prefix": "sec-tenant-7qx45m",
     "groups": {
-      "dailyadmin": "guid",
-      "elevadmin": "guid",
+      "sec-tenant-dailyadmin": "guid",
+      "sec-tenant-privadmin": "guid",
       ...
-    },
-    "lastUpdated": "2025-10-31T12:00:00Z"
+    }
   },
   "subscriptions": {
     "subscription-id-1": {
-      "prefix": "sec-az-7qx45m-8983f6f3",
+      "prefix": "sec-az-759e1a27",
       "groups": {
         "reader": "guid",
         "dailyadmin": "guid",
@@ -212,173 +184,104 @@ The script saves all information in `{tenantcode}-config.json`:
       }
     },
     "subscription-id-2": { ... }
-  },
-  "subscriptionId": "current-subscription-id"
+  }
 }
 ```
 
-## Error Handling
+## Foutafhandeling
 
-The script:
-- ✅ Checks if groups already exist before creating (idempotent)
-- ✅ Checks if role assignments already exist (idempotent)
-- ✅ Verifies groups exist via Graph API (not just via config)
-- ✅ Uses `--assignee-principal-type Group` for RBAC assignments
-- ✅ Waits 15 seconds between group creation and RBAC assignments (replication)
-- ✅ Logs all actions with color-coded output
-- ✅ Multi-subscription support: preserves existing subscriptions in config
-- ✅ Automatic authentication management
+Het script:
+- ✅ Controleert of groepen al bestaan voordat het ze aanmaakt (idempotent)
+- ✅ Controleert of rol assignments al bestaan (idempotent)
+- ✅ Verifieert dat groepen echt bestaan via Graph API (niet alleen via config)
+- ✅ Gebruikt `--assignee-principal-type Group` voor RBAC assignments
+- ✅ Wacht 15 seconden tussen groep aanmaken en RBAC assignments (replicatie)
+- ✅ Logt alle acties met kleurgecodeerde output
+- ✅ Multi-subscription support: behoudt bestaande subscriptions in config
 
-### Typical workflow with errors:
-1. **First run**: Possible replication delay errors with RBAC
-2. **Second run**: Script recognizes existing groups and only assigns missing roles
-3. **Result**: All groups and roles correctly configured
+### Typische workflow bij fouten:
+1. **Eerste run**: Mogelijk enkele replication delay errors bij RBAC
+2. **Tweede run**: Script herkent bestaande groepen en wijst alleen missende rollen toe
+3. **Resultaat**: Alle groepen en rollen correct geconfigureerd
 
 ## Parameters
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `-TenantCode` | First run only | Tenant code for group names (e.g., "7qx45m") |
-| `-WhatIf` | No | Test mode, no changes made |
-| `-SetupEntraOnly` | No | Only AU and Entra roles, no subscription setup |
-| `-ConfigFile` | No | Path to config file (default: `<scriptdir>/<tenantcode>-config.json`) |
+- `-TenantCode` (optioneel na eerste run): Tenant code voor groepnamen (bijv. "7qx45m")
+- `-WhatIf`: Test mode, geen wijzigingen
+- `-SetupEntraOnly`: Alleen AU en Entra roles, geen nieuwe groepen
+- `-ShowPassword`: Toon wachtwoorden van nieuw aangemaakte users in output
+- `-ConfigFile`: Pad naar config.json (default: `$PSScriptRoot/<tenantcode>-config.json`)
 
-## Verification
+## Verificatie
 
-After running the script, you can verify everything:
+Na het uitvoeren van het script kun je alles verifiëren:
 
 ```powershell
-# View all created groups
-az ad group list --filter "startswith(displayName, 'sec-tenant-')" --output table
-az ad group list --filter "startswith(displayName, 'sec-az-')" --output table
+# Bekijk alle aangemaakte groepen
+az ad group list --filter "startswith(displayName, 'sec-')" --output table
 
-# View AU properties
-az rest --method GET --uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits/<au-id>"
+# Bekijk AU properties
+az rest --method GET --url "https://graph.microsoft.com/v1.0/directory/administrativeUnits/<au-id>"
 
-# View RBAC assignments on subscription
+# Bekijk RBAC assignments op subscription
 az role assignment list --subscription "<subscription-id>" --output table
 
-# View tenant-level RBAC (reservations)
+# Bekijk tenant-level RBAC (reservations)
 az role assignment list --scope "/providers/Microsoft.Capacity" --output table
 
-# View config file
-Get-Content 7qx45m-config.json | ConvertFrom-Json | ConvertTo-Json -Depth 10
+# Bekijk config.json
+cat config.json | jq
 ```
 
-## Files
+## Bestanden
 
-- `deploy-entra-groups.ps1` - Complete deployment script (standalone)
-- `{tenantcode}-config.json` - Configuration with all groups and subscriptions (auto-created)
-- `README.md` - This documentation
+- `deploy-entra-groups.ps1` - Unified deployment script (standalone)
+- `config.json` - Configuratie met alle groepen en subscriptions (wordt automatisch aangemaakt)
+- `README.md` - Deze documentatie
 
 ## Troubleshooting
 
-### Common issues:
+### Veel voorkomende problemen:
 
-1. **"PowerShell version too old"**
-   - **Solution**: Install PowerShell 7+ (not Windows PowerShell 5.1)
-   - Check version: `$PSVersionTable.PSVersion`
+1. **"Config file does not exist and no TenantCode parameter provided"**
+   - **Oplossing**: Dit is verwacht bij eerste run vanuit Cloud Shell
+   - Druk op pijltje omhoog ↑ en voeg `-TenantCode "jouw-code"` toe
 
-2. **"az: command not found"**
-   - **Solution**: Install Azure CLI and ensure it's in PATH
-   - Test: `az --version`
+2. **"Not logged in to Azure CLI"**
+   - **Oplossing**: Run `az login` of gebruik Azure Cloud Shell (al ingelogd)
 
-3. **"No config file found and no TenantCode parameter provided"**
-   - **Solution**: On first run, provide `-TenantCode "your-code"` parameter
+3. **"Insufficient privileges"**
+   - **Oplossing**: Zorg voor Global Admin + Subscription Owner rechten
 
-4. **"Insufficient privileges"**
-   - **Solution**: Ensure you have Global Admin + Subscription Owner rights
-   - Login with correct account: `az logout` then `az login --use-device-code`
+4. **"PrincipalNotFound" errors bij RBAC assignments**
+   - **Oplossing**: Dit is normaal bij eerste run (replication delay)
+   - Run het script nogmaals, het wijst alleen missende rollen toe
 
-5. **"PrincipalNotFound" errors during RBAC assignments**
-   - **Solution**: Normal on first run (replication delay)
-   - Run script again, it will only assign missing roles
+5. **"Group already exists" warnings**
+   - **Dit is normaal**: Script is idempotent, herkent bestaande groepen
+   - Geen actie nodig
 
-6. **"Group already exists" warnings**
-   - **This is normal**: Script is idempotent, recognizes existing groups
-   - No action needed
+6. **Config.json niet gevonden bij tweede subscription**
+   - **Oplossing**: Zorg dat `config.json` in dezelfde directory staat
+   - Of download eerst vanuit Cloud Shell storage/GitHub
 
-7. **"Cannot create Administrative Unit"**
-   - **Solution**: Create AU manually in Azure Portal:
-     1. Go to **Azure Portal** → **Entra ID** → **Administrative Units**
-     2. Click **"New administrative unit"**
-     3. **Name**: `{your-tenant-code}-tenant-admin`
-     4. **Description**: Restricted administrative unit for tenant management operations
-     5. **✓ Check**: "Restricted management administrative unit"
-     6. Click **Create**
-     7. Re-run the script
+### Debug informatie
+Het script toont uitgebreide logging:
+- 🔵 Cyan: Informatie over wat er uitgevoerd wordt
+- 🟢 Green: Succesvolle acties
+- 🟡 Yellow: Waarschuwingen (meestal OK)
+- 🔴 Red: Errors (vereisen actie)
 
-### Debug information
-The script shows extensive logging:
-- 🔵 Cyan: Information about what's being executed
-- 🟢 Green: Successful actions
-- 🟡 Yellow: Warnings (usually OK)
-- 🔴 Red: Errors (require action)
-
-## Security Notes
-
-### Token Lifetime
-- Azure CLI tokens are valid for **1 hour** by default
-- This cannot be shortened via `az login` parameters
-- If the script triggered the login, it automatically logs out at the end
-- If you were already logged in, your session remains active
-
-### Authentication Scope
-- The script uses standard Azure CLI authentication
-- Requires delegated Graph API permissions (user context)
-- Required permissions:
-  - `Directory.AccessAsUser.All` (recommended), OR
-  - `Directory.ReadWrite.All` + `Group.ReadWrite.All` + `RoleManagement.ReadWrite.Directory`
+### Cloud Shell specifiek
+- Scripts in Cloud Shell storage blijven bewaard tussen sessies
+- Config.json wordt opgeslagen in dezelfde directory als het script
+- Bij gebruik van één-regel commando wordt config.json NIET bewaard
+- Voor multi-subscription: download script eerst, voer lokaal uit
 
 ## Best Practices
 
-1. **Test first with `-WhatIf`** to see what will happen
-2. **Run script twice** on new tenant (first: groups, second: fix replication delays)
-3. **Save config file** for multi-subscription setups
-4. **Use dedicated admin account** for running the script
-5. **Review created groups** in Azure Portal after first run
-6. **Document your tenant code** for future reference
-
-## Example Workflow
-
-```powershell
-# 1. Download script
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/CXNSMB/onboarding/main/entra-groups-setup/deploy-entra-groups.ps1" -OutFile "deploy-entra-groups.ps1"
-
-# 2. Test run (WhatIf)
-./deploy-entra-groups.ps1 -TenantCode "7qx45m" -WhatIf
-
-# 3. First subscription
-./deploy-entra-groups.ps1 -TenantCode "7qx45m"
-
-# 4. Wait for replication (15 seconds already built-in)
-
-# 5. Second run to fix any replication issues
-./deploy-entra-groups.ps1 -TenantCode "7qx45m"
-
-# 6. Switch to another subscription
-az account set --subscription "other-subscription-id"
-
-# 7. Add second subscription (TenantCode read from config)
-./deploy-entra-groups.ps1
-
-# 8. Verify
-az ad group list --filter "startswith(displayName, 'sec-tenant-')" --output table
-az ad group list --filter "startswith(displayName, 'sec-az-')" --output table
-```
-
-## Multi-Tenant Usage
-
-If you manage multiple customer tenants:
-
-```powershell
-# Tenant 1
-az logout  # Clean slate
-./deploy-entra-groups.ps1 -TenantCode "tenant1"
-
-# Tenant 2
-az logout  # Clean slate
-./deploy-entra-groups.ps1 -TenantCode "tenant2"
-```
-
-The automatic logout ensures you don't accidentally mix tenants.
+1. **Test eerst met -WhatIf** om te zien wat er gebeurt
+2. **Run script twee keer** bij nieuwe tenant (eerste keer: groepen, tweede keer: fix replication delays)
+3. **Bewaar config.json** voor multi-subscription setups
+4. **Gebruik Cloud Shell** voor snelle setup zonder lokale installatie
+5. **Download script lokaal** voor productie gebruik met meerdere subscriptions
