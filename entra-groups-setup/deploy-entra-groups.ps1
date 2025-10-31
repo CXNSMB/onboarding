@@ -243,6 +243,11 @@ function Invoke-GraphRequest {
     try {
         $azArgs = @("rest", "--method", $Method, "--url", $Uri)
         
+        # Add Content-Type header for POST, PUT, PATCH requests
+        if ($Method -in @("POST", "PUT", "PATCH")) {
+            $azArgs += @("--headers", "Content-Type=application/json")
+        }
+        
         if ($Body) {
             $bodyJson = $Body | ConvertTo-Json -Depth 10 -Compress
             $azArgs += @("--body", $bodyJson)
