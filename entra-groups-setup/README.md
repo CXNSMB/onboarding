@@ -2,44 +2,75 @@
 
 Dit script deployment systeem zorgt voor het aanmaken van Entra ID groepen en het toewijzen van de juiste rollen voor tenant en subscription management.
 
-## Quick Start - Azure Cloud Shell (Browser)
+## Waarom niet Azure Cloud Shell?
 
-De snelste manier om te starten is via Azure Cloud Shell in je browser:
+**Cloud Shell heeft inconsistente Graph API permissions** die dit script onbetrouwbaar maken:
 
-1. Open [Azure Cloud Shell](https://shell.azure.com) in je browser
-2. Selecteer **PowerShell** als shell type
-3. Kopieer en plak het volgende commando:
+- ✅ **Lokaal met `az login --use-device-code`**: Je krijgt **Directory.AccessAsUser.All** delegated permission
+  - Deze permission geeft volledige toegang tot alle Graph API operaties die jij als gebruiker mag uitvoeren
+  - Werkt altijd consistent voor Global Administrators
+  
+- ❌ **Cloud Shell**: Gebruikt een **managed identity** met beperkte permissions
+  - Soms krijg je alleen **Directory.ReadWrite.All** (zonder AccessAsUser.All)
+  - Deze permission is onvoldoende voor:
+    - Aanmaken van role-assignable groups (vereist RoleManagement.ReadWrite.Directory)
+    - Aanmaken van Administrative Units
+    - Toewijzen van AU-scoped roles
+  - Permissions zijn **niet consistent** tussen tenants
+  - Je kunt de permissions van de Cloud Shell managed identity niet aanpassen
 
-```powershell
-# Download en voer het script uit (zonder parameters - geeft instructies)
-iwr 'https://raw.githubusercontent.com/CXNSMB/onboarding/main/entra-groups-setup/deploy-entra-groups.ps1' | iex
+**Voorbeeld uit testing:**
+```
+Tenant 7qx45m: Had Directory.AccessAsUser.All → Werkte perfect
+Tenant xyz001: Alleen Directory.ReadWrite.All → Faalden AU en role-assignable groups
 ```
 
-4. Je krijgt een foutmelding omdat geen TenantCode parameter is meegegeven
-5. Druk op pijltje omhoog ↑ om het commando terug te halen
-6. Voeg `-TenantCode "jouw-tenant-code"` toe aan het einde:
+**Daarom: Script is ontworpen voor lokale PowerShell uitvoering met device code authentication.**
 
-```powershell
-# Met TenantCode parameter
-iwr 'https://raw.githubusercontent.com/CXNSMB/onboarding/main/entra-groups-setup/deploy-entra-groups.ps1' | iex -TenantCode "jouw-tenant-code"
-```
+## Quick Start - Lokale PowerShell (Aanbevolen)
 
-Vervang `"jouw-tenant-code"` met je daadwerkelijke tenant code (bijv. "7qx45m").
+## Quick Start - Lokale PowerShell (Aanbevolen)
 
-### Alternatief: Download eerst, voer later uit
+Het script detecteert automatisch of je bent ingelogd en logt je zo nodig in met device code authentication:
 
-Als je het script wilt bekijken voordat je het uitvoert:
+1. Download het script naar een lokale folder:
 
 ```powershell
 # Download het script
 iwr 'https://raw.githubusercontent.com/CXNSMB/onboarding/main/entra-groups-setup/deploy-entra-groups.ps1' -OutFile 'deploy-entra-groups.ps1'
+```
 
-# Bekijk het script
-cat deploy-entra-groups.ps1
+2. Voer het script uit (automatische login indien nodig):
 
-# Voer het uit
+```powershell
+# Eerste keer met TenantCode
+./deploy-entra-groups.ps1 -TenantCode "jouw-tenant-code"
+
+# Toon wachtwoorden van nieuw aangemaakte users
+./deploy-entra-groups.ps1 -TenantCode "jouw-tenant-code" -ShowPassword
+```
+
+3. Het script:
+   - ✅ Controleert of je bent ingelogd
+   - ✅ Controleert of Graph API token nog geldig is
+   - ✅ Logt automatisch in met device code indien nodig
+   - ✅ Logt automatisch uit na afloop (alleen als script zelf heeft ingelogd)
+
+## Alternatief - Cloud Shell (Niet Aanbevolen)
+
+⚠️ **Werkt mogelijk niet** vanwege inconsistente Graph API permissions (zie boven).
+
+Als je het toch wilt proberen:
+
+```powershell
+# Download en voer het script uit
+iwr 'https://raw.githubusercontent.com/CXNSMB/onboarding/main/entra-groups-setup/deploy-entra-groups.ps1' -OutFile 'deploy-entra-groups.ps1'
+
+# Voer uit
 ./deploy-entra-groups.ps1 -TenantCode "jouw-tenant-code"
 ```
+
+Als je errors krijgt over "Insufficient privileges" of "Authorization_RequestDenied", gebruik dan de lokale PowerShell methode.
 
 ## Beschikbare Scripts
 
@@ -63,19 +94,22 @@ cat deploy-entra-groups.ps1
 
 - **Global Administrator** rechten in Entra ID
 - **Subscription Owner** rechten op de doelsubscriptie
-- **Azure CLI** geïnstalleerd en ingelogd (in Cloud Shell al beschikbaar)
-- **Geen PowerShell modules vereist**
+- **PowerShell 7+** (lokaal geïnstalleerd)
+- **Azure CLI** geïnstalleerd en beschikbaar in PATH
+- **Device code authentication** (script logt automatisch in indien nodig)
+- **Geen PowerShell modules vereist** (alleen Azure CLI)
 
-## Gebruik (Lokaal of in Cloud Shell Storage)
+## Gebruik (Lokaal PowerShell)
 
-### 1. Zorg dat je bent ingelogd in de juiste subscription
+### 1. Zorg dat Azure CLI is geïnstalleerd
 ```powershell
-# Controleer huidige context
-az account show
+# Check of Azure CLI beschikbaar is
+az --version
 
-# Wissel naar gewenste subscription indien nodig
-az account set --subscription "your-subscription-id"
+# Indien niet geïnstalleerd: https://learn.microsoft.com/cli/azure/install-azure-cli
 ```
+
+Het script controleert automatisch je login status en logt in indien nodig.
 
 ### 2. Eerste keer uitvoeren (nieuwe tenant)
 ```powershell
@@ -96,6 +130,7 @@ Dit maakt:
 
 ### 3. Extra subscription toevoegen
 ```powershell
+# Script detecteert automatisch dat je al bent ingelogd
 # Wissel naar andere subscription
 az account set --subscription "andere-subscription-id"
 
@@ -248,10 +283,13 @@ cat config.json | jq
    - Druk op pijltje omhoog ↑ en voeg `-TenantCode "jouw-code"` toe
 
 2. **"Not logged in to Azure CLI"**
-   - **Oplossing**: Run `az login` of gebruik Azure Cloud Shell (al ingelogd)
+   - **Oplossing**: Script logt automatisch in met device code
+   - Of handmatig: `az login --use-device-code`
 
-3. **"Insufficient privileges"**
-   - **Oplossing**: Zorg voor Global Admin + Subscription Owner rechten
+3. **"Insufficient privileges" of "Authorization_RequestDenied"**
+   - **Mogelijke oorzaak**: Cloud Shell met beperkte permissions
+   - **Oplossing**: Gebruik lokale PowerShell in plaats van Cloud Shell
+   - Zorg voor Global Admin + Subscription Owner rechten
 
 4. **"PrincipalNotFound" errors bij RBAC assignments**
    - **Oplossing**: Dit is normaal bij eerste run (replication delay)
@@ -262,8 +300,20 @@ cat config.json | jq
    - Geen actie nodig
 
 6. **Config.json niet gevonden bij tweede subscription**
-   - **Oplossing**: Zorg dat `config.json` in dezelfde directory staat
-   - Of download eerst vanuit Cloud Shell storage/GitHub
+   - **Oplossing**: Zorg dat `<tenantcode>-config.json` in dezelfde directory staat
+   - Script zoekt naar config met tenantcode in bestandsnaam
+
+7. **"Graph API token expired or invalid"**
+   - **Dit is normaal**: Token verloopt na 1 uur
+   - **Oplossing**: Script detecteert dit automatisch en logt opnieuw in
+   - Geen handmatige actie nodig
+
+### Cloud Shell specifieke problemen
+
+8. **"Authorization_RequestDenied" bij Administrative Unit of role-assignable groups**
+   - **Oorzaak**: Cloud Shell managed identity heeft geen Directory.AccessAsUser.All permission
+   - **Oplossing**: Gebruik lokale PowerShell met device code authentication
+   - Cloud Shell permissions zijn niet consistent tussen tenants
 
 ### Debug informatie
 Het script toont uitgebreide logging:
@@ -272,16 +322,19 @@ Het script toont uitgebreide logging:
 - 🟡 Yellow: Waarschuwingen (meestal OK)
 - 🔴 Red: Errors (vereisen actie)
 
-### Cloud Shell specifiek
-- Scripts in Cloud Shell storage blijven bewaard tussen sessies
-- Config.json wordt opgeslagen in dezelfde directory als het script
-- Bij gebruik van één-regel commando wordt config.json NIET bewaard
-- Voor multi-subscription: download script eerst, voer lokaal uit
+### Authentication troubleshooting
+- Script test automatisch of Graph API token geldig is
+- Bij verlopen token: automatische re-login met device code
+- Bij eerste run zonder login: automatische device code login
+- Automatische logout na afloop (alleen als script zelf heeft ingelogd)
+- Device code werkt ook in devcontainer/Codespaces (geen browser vereist)
 
 ## Best Practices
 
-1. **Test eerst met -WhatIf** om te zien wat er gebeurt
-2. **Run script twee keer** bij nieuwe tenant (eerste keer: groepen, tweede keer: fix replication delays)
-3. **Bewaar config.json** voor multi-subscription setups
-4. **Gebruik Cloud Shell** voor snelle setup zonder lokale installatie
-5. **Download script lokaal** voor productie gebruik met meerdere subscriptions
+1. **Gebruik lokale PowerShell** (niet Cloud Shell) voor betrouwbare Graph API permissions
+2. **Test eerst met -WhatIf** om te zien wat er gebeurt
+3. **Run script twee keer** bij nieuwe tenant (eerste keer: groepen, tweede keer: fix replication delays)
+4. **Bewaar config.json** voor multi-subscription setups
+5. **Gebruik -ShowPassword** alleen bij initiële setup om wachtwoorden te zien
+6. **Device code authentication** werkt ook in devcontainer/Codespaces
+7. **Script logt automatisch in/uit** - geen handmatige `az login` nodig
