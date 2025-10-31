@@ -1,61 +1,81 @@
-# Entra Groups Setup
+# Entra Groups Setup - PowerShell
 
 Complete deployment script for creating Entra ID groups and assigning proper roles for tenant and subscription management.
 
-## Quick Start - Azure Cloud Shell
+## Prerequisites
 
-The fastest way to get started is via Azure Cloud Shell in your browser:
+- **PowerShell 7+** installed on your local machine
+- **Azure CLI** installed and available in PATH
+- **Global Administrator** rights in Entra ID
+- **Subscription Owner** rights on target subscription
 
-### Prerequisites
-Before running the script, **manually create the Administrative Unit** (due to Cloud Shell API permission limitations):
+### Installation
 
-1. Go to **Azure Portal** → **Entra ID** → **Administrative Units**
-2. Click **"New administrative unit"**
-3. Configure:
-   - **Name**: `{your-tenant-code}-tenant-admin`
-   - **Description**: Restricted administrative unit for tenant management operations
-   - **✓ Check**: "Restricted management administrative unit"
-4. Click **Create**
-
-### Run the Script
-
-1. Open [Azure Cloud Shell](https://shell.azure.com)
-2. Select **Bash** as shell type
-3. Copy and paste the following command:
-
+**PowerShell 7+:**
 ```bash
-# Download and execute the script
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/entra-groups-setup/deploy-entra-groups.sh | bash -s -- -t "your-tenant-code"
+# Windows
+winget install Microsoft.PowerShell
+
+# macOS
+brew install --cask powershell
+
+# Linux
+# See: https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-linux
 ```
 
-Replace `"your-tenant-code"` with your actual tenant code (e.g., "7qx45m").
-
-> 💡 **Why manual AU creation?** Azure Cloud Shell uses a managed app that lacks the `AdministrativeUnit.ReadWrite.All` Graph API permission. Creating the AU manually beforehand allows the script to proceed with all other operations (group creation, role assignments) which work fine with Cloud Shell's existing permissions.
-
-### Alternative: Download first, execute later
-
-If you want to review the script before executing:
-
+**Azure CLI:**
 ```bash
-# Download the script
-curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/entra-groups-setup/deploy-entra-groups.sh -o deploy-entra-groups.sh
-chmod +x deploy-entra-groups.sh
+# Windows
+winget install Microsoft.AzureCLI
 
-# Review the script
-cat deploy-entra-groups.sh
+# macOS
+brew install azure-cli
 
-# Execute it
-./deploy-entra-groups.sh -t "your-tenant-code"
+# Linux
+curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
 ```
+
+## Quick Start
+
+1. **Download the script:**
+```powershell
+# Download to current directory
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/CXNSMB/onboarding/main/entra-groups-setup/deploy-entra-groups.ps1" -OutFile "deploy-entra-groups.ps1"
+```
+
+2. **Run the script:**
+```powershell
+# First run - creates groups and config file
+./deploy-entra-groups.ps1 -TenantCode "your-tenant-code"
+```
+
+The script will:
+- ✅ Check if you're logged in to Azure CLI
+- ✅ If not logged in → automatically trigger device code login
+- ✅ Execute all setup tasks
+- ✅ If login was triggered by the script → automatically logout at the end
+
+> 💡 **Note:** If you're already logged in with `az login`, the script will use your existing session and will NOT logout at the end.
+
+## Authentication Behavior
+
+The script intelligently handles authentication:
+
+| Scenario | Script Behavior |
+|----------|----------------|
+| **Not logged in** | Triggers `az login --use-device-code` → Executes script → Logs out automatically |
+| **Already logged in** | Uses existing session → Executes script → Does NOT logout |
+
+This ensures your existing Azure CLI sessions are never disrupted.
 
 ## Features
 
-### `deploy-entra-groups.sh` - Complete Setup Script
-**Standalone script** that handles all Entra ID setup using Microsoft Graph REST API via Azure CLI. No PowerShell modules required.
+### `deploy-entra-groups.ps1` - Complete Setup Script
+**Standalone PowerShell script** that handles all Entra ID setup using Microsoft Graph REST API via Azure CLI.
 
 **Features:**
 - ✅ Hard-coded group definitions (standalone, no external files needed)
-- ✅ Uses only Azure CLI and jq (available in Cloud Shell)
+- ✅ Uses only Azure CLI (no PowerShell modules required)
 - ✅ Supports multiple subscriptions in one config file
 - ✅ Creates Restricted Administrative Unit
 - ✅ Assigns AU-scoped roles to calling user
@@ -64,18 +84,12 @@ cat deploy-entra-groups.sh
 - ✅ Subscription-level RBAC roles
 - ✅ Azure Reservations RBAC roles (tenant-level)
 - ✅ 15 second replication wait (prevents errors!)
-
-## Requirements
-
-- **Global Administrator** rights in Entra ID
-- **Subscription Owner** rights on target subscription
-- **Azure CLI** installed and logged in (pre-installed in Cloud Shell)
-- **jq** for JSON parsing (pre-installed in Cloud Shell)
+- ✅ Automatic login/logout management
 
 ## Usage
 
-### 1. Ensure you're logged in to the correct subscription
-```bash
+### 1. Ensure you're in the correct subscription
+```powershell
 # Check current context
 az account show
 
@@ -84,9 +98,9 @@ az account set --subscription "your-subscription-id"
 ```
 
 ### 2. First run (new tenant)
-```bash
+```powershell
 # Execute with TenantCode parameter
-./deploy-entra-groups.sh -t "7qx45m"
+./deploy-entra-groups.ps1 -TenantCode "7qx45m"
 ```
 
 This creates:
@@ -96,24 +110,24 @@ This creates:
 - `7qx45m-config.json` file
 
 ### 3. Add another subscription
-```bash
+```powershell
 # Switch to another subscription
 az account set --subscription "other-subscription-id"
 
 # Run script (reads TenantCode from config file)
-./deploy-entra-groups.sh
+./deploy-entra-groups.ps1
 ```
 
 The script automatically recognizes it's the same tenant and adds the subscription to existing config.
 
 ### 4. WhatIf mode (test without changes)
-```bash
-./deploy-entra-groups.sh -t "7qx45m" -w
+```powershell
+./deploy-entra-groups.ps1 -TenantCode "7qx45m" -WhatIf
 ```
 
 ### 5. Entra-only mode (skip subscription setup)
-```bash
-./deploy-entra-groups.sh -t "7qx45m" -e
+```powershell
+./deploy-entra-groups.ps1 -TenantCode "7qx45m" -SetupEntraOnly
 ```
 
 ## What does the script do?
@@ -146,6 +160,10 @@ The script creates the following tenant-level groups and assigns roles:
   - Authentication Policy Administrator
   - Privileged Authentication Administrator
   - Conditional Access Administrator
+- `sec-tenant-{code}-sharepoint-admin` - SharePoint Administrator
+- `sec-tenant-{code}-intune-admin` - Intune Administrator
+- `sec-tenant-{code}-teams-admin` - Teams Administrator
+- `sec-tenant-{code}-privileged-role-admin` - Privileged Role Administrator
 
 **Groups with Azure Reservations RBAC Roles (tenant-level, scope: `/providers/Microsoft.Capacity`):**
 - `sec-tenant-{code}-reservations-read` → Reservations Reader
@@ -209,6 +227,7 @@ The script:
 - ✅ Waits 15 seconds between group creation and RBAC assignments (replication)
 - ✅ Logs all actions with color-coded output
 - ✅ Multi-subscription support: preserves existing subscriptions in config
+- ✅ Automatic authentication management
 
 ### Typical workflow with errors:
 1. **First run**: Possible replication delay errors with RBAC
@@ -217,17 +236,18 @@ The script:
 
 ## Parameters
 
-- `-t, --tenant-code` (optional after first run): Tenant code for group names (e.g., "7qx45m")
-- `-w, --whatif`: Test mode, no changes made
-- `-e, --entra-only`: Only AU and Entra roles, no subscription setup
-- `-c, --config-file`: Path to config file (default: `<scriptdir>/<tenantcode>-config.json`)
-- `-h, --help`: Show help message
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `-TenantCode` | First run only | Tenant code for group names (e.g., "7qx45m") |
+| `-WhatIf` | No | Test mode, no changes made |
+| `-SetupEntraOnly` | No | Only AU and Entra roles, no subscription setup |
+| `-ConfigFile` | No | Path to config file (default: `<scriptdir>/<tenantcode>-config.json`) |
 
 ## Verification
 
 After running the script, you can verify everything:
 
-```bash
+```powershell
 # View all created groups
 az ad group list --filter "startswith(displayName, 'sec-tenant-')" --output table
 az ad group list --filter "startswith(displayName, 'sec-az-')" --output table
@@ -242,12 +262,12 @@ az role assignment list --subscription "<subscription-id>" --output table
 az role assignment list --scope "/providers/Microsoft.Capacity" --output table
 
 # View config file
-cat 7qx45m-config.json | jq .
+Get-Content 7qx45m-config.json | ConvertFrom-Json | ConvertTo-Json -Depth 10
 ```
 
 ## Files
 
-- `deploy-entra-groups.sh` - Complete deployment script (standalone)
+- `deploy-entra-groups.ps1` - Complete deployment script (standalone)
 - `{tenantcode}-config.json` - Configuration with all groups and subscriptions (auto-created)
 - `README.md` - This documentation
 
@@ -255,27 +275,38 @@ cat 7qx45m-config.json | jq .
 
 ### Common issues:
 
-1. **"No config file found and no TenantCode parameter provided"**
-   - **Solution**: Expected on first run from Cloud Shell
-   - Add `-t "your-code"` parameter
+1. **"PowerShell version too old"**
+   - **Solution**: Install PowerShell 7+ (not Windows PowerShell 5.1)
+   - Check version: `$PSVersionTable.PSVersion`
 
-2. **"Not logged in to Azure CLI"**
-   - **Solution**: Run `az login --use-device-code` or use Azure Cloud Shell (already logged in)
+2. **"az: command not found"**
+   - **Solution**: Install Azure CLI and ensure it's in PATH
+   - Test: `az --version`
 
-3. **"Insufficient privileges"**
+3. **"No config file found and no TenantCode parameter provided"**
+   - **Solution**: On first run, provide `-TenantCode "your-code"` parameter
+
+4. **"Insufficient privileges"**
    - **Solution**: Ensure you have Global Admin + Subscription Owner rights
+   - Login with correct account: `az logout` then `az login --use-device-code`
 
-4. **"PrincipalNotFound" errors during RBAC assignments**
+5. **"PrincipalNotFound" errors during RBAC assignments**
    - **Solution**: Normal on first run (replication delay)
    - Run script again, it will only assign missing roles
 
-5. **"Group already exists" warnings**
+6. **"Group already exists" warnings**
    - **This is normal**: Script is idempotent, recognizes existing groups
    - No action needed
 
-6. **Config file not found on second subscription**
-   - **Solution**: Ensure config file is in same directory
-   - Or download first from Cloud Shell storage/GitHub
+7. **"Cannot create Administrative Unit"**
+   - **Solution**: Create AU manually in Azure Portal:
+     1. Go to **Azure Portal** → **Entra ID** → **Administrative Units**
+     2. Click **"New administrative unit"**
+     3. **Name**: `{your-tenant-code}-tenant-admin`
+     4. **Description**: Restricted administrative unit for tenant management operations
+     5. **✓ Check**: "Restricted management administrative unit"
+     6. Click **Create**
+     7. Re-run the script
 
 ### Debug information
 The script shows extensive logging:
@@ -284,28 +315,70 @@ The script shows extensive logging:
 - 🟡 Yellow: Warnings (usually OK)
 - 🔴 Red: Errors (require action)
 
-### Cloud Shell specific
-- Scripts in Cloud Shell storage persist between sessions
-- Config file is saved in same directory as script
-- When using one-line piped command, config file is NOT saved
-- For multi-subscription: download script first, execute locally
+## Security Notes
+
+### Token Lifetime
+- Azure CLI tokens are valid for **1 hour** by default
+- This cannot be shortened via `az login` parameters
+- If the script triggered the login, it automatically logs out at the end
+- If you were already logged in, your session remains active
+
+### Authentication Scope
+- The script uses standard Azure CLI authentication
+- Requires delegated Graph API permissions (user context)
+- Required permissions:
+  - `Directory.AccessAsUser.All` (recommended), OR
+  - `Directory.ReadWrite.All` + `Group.ReadWrite.All` + `RoleManagement.ReadWrite.Directory`
 
 ## Best Practices
 
-1. **Test first with -w (WhatIf)** to see what will happen
+1. **Test first with `-WhatIf`** to see what will happen
 2. **Run script twice** on new tenant (first: groups, second: fix replication delays)
 3. **Save config file** for multi-subscription setups
-4. **Use Cloud Shell** for quick setup without local installation
-5. **Download script locally** for production use with multiple subscriptions
+4. **Use dedicated admin account** for running the script
+5. **Review created groups** in Azure Portal after first run
+6. **Document your tenant code** for future reference
 
-## Differences from PowerShell Version
+## Example Workflow
 
-The Bash version:
-- ✅ Uses same logic and features as PowerShell version
-- ✅ Native in Azure Cloud Shell (Bash is default)
-- ✅ No PowerShell required
-- ✅ Uses `jq` for JSON parsing (pre-installed in Cloud Shell)
-- ✅ Same config file structure
-- ✅ Same group naming conventions
-- ✅ Same role assignments
-- ✅ Fully tested and production-ready
+```powershell
+# 1. Download script
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/CXNSMB/onboarding/main/entra-groups-setup/deploy-entra-groups.ps1" -OutFile "deploy-entra-groups.ps1"
+
+# 2. Test run (WhatIf)
+./deploy-entra-groups.ps1 -TenantCode "7qx45m" -WhatIf
+
+# 3. First subscription
+./deploy-entra-groups.ps1 -TenantCode "7qx45m"
+
+# 4. Wait for replication (15 seconds already built-in)
+
+# 5. Second run to fix any replication issues
+./deploy-entra-groups.ps1 -TenantCode "7qx45m"
+
+# 6. Switch to another subscription
+az account set --subscription "other-subscription-id"
+
+# 7. Add second subscription (TenantCode read from config)
+./deploy-entra-groups.ps1
+
+# 8. Verify
+az ad group list --filter "startswith(displayName, 'sec-tenant-')" --output table
+az ad group list --filter "startswith(displayName, 'sec-az-')" --output table
+```
+
+## Multi-Tenant Usage
+
+If you manage multiple customer tenants:
+
+```powershell
+# Tenant 1
+az logout  # Clean slate
+./deploy-entra-groups.ps1 -TenantCode "tenant1"
+
+# Tenant 2
+az logout  # Clean slate
+./deploy-entra-groups.ps1 -TenantCode "tenant2"
+```
+
+The automatic logout ensures you don't accidentally mix tenants.
