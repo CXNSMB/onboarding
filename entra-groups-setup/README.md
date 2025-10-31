@@ -6,6 +6,19 @@ Complete deployment script for creating Entra ID groups and assigning proper rol
 
 The fastest way to get started is via Azure Cloud Shell in your browser:
 
+### Prerequisites
+Before running the script, **manually create the Administrative Unit** (due to Cloud Shell API permission limitations):
+
+1. Go to **Azure Portal** → **Entra ID** → **Administrative Units**
+2. Click **"New administrative unit"**
+3. Configure:
+   - **Name**: `{your-tenant-code}-tenant-admin` (e.g., `7qx45m-tenant-admin`)
+   - **Description**: Restricted administrative unit for tenant management operations
+   - **✓ Check**: "Restricted management administrative unit"
+4. Click **Create**
+
+### Run the Script
+
 1. Open [Azure Cloud Shell](https://shell.azure.com)
 2. Select **Bash** as shell type
 3. Copy and paste the following command:
@@ -16,6 +29,8 @@ curl -s https://raw.githubusercontent.com/CXNSMB/onboarding/main/entra-groups-se
 ```
 
 Replace `"your-tenant-code"` with your actual tenant code (e.g., "7qx45m").
+
+> 💡 **Why manual AU creation?** Azure Cloud Shell uses a managed app that lacks the `AdministrativeUnit.ReadWrite.All` Graph API permission. Creating the AU manually beforehand allows the script to proceed with all other operations (group creation, role assignments) which work fine with Cloud Shell's existing permissions.
 
 ### Alternative: Download first, execute later
 

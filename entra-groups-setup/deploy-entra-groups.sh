@@ -200,11 +200,33 @@ check_requirements() {
     # Check if logged in to Azure CLI
     if ! az account show &> /dev/null; then
         log "red" "Error: Not logged in to Azure CLI"
-        log "yellow" "Please run: az login --use-device-code"
+        log "yellow" "Please run: az login --scope https://graph.microsoft.com/.default"
+        exit 1
+    fi
+    
+    # Test if we can actually call Graph API (check permissions)
+    log "cyan" "Testing Graph API access..."
+    local test_result
+    test_result=$(az rest --method GET --uri "https://graph.microsoft.com/v1.0/organization" 2>&1)
+    
+    if echo "$test_result" | grep -q "Authorization_RequestDenied\|Forbidden\|Insufficient privileges"; then
+        log "red" ""
+        log "red" "❌ Graph API access denied - insufficient permissions"
+        log "yellow" ""
+        log "yellow" "Your current authentication doesn't have the required Microsoft Graph API permissions."
+        log "yellow" "This is common in Azure Cloud Shell due to limited token scope."
+        log "yellow" ""
+        log "yellow" "Please re-authenticate with Graph API scope:"
+        log "white" ""
+        log "white" "  az logout"
+        log "white" "  az login --scope https://graph.microsoft.com/.default"
+        log "white" ""
+        log "yellow" "Then run this script again."
         exit 1
     fi
     
     log "green" "✓ All requirements met"
+    log "green" "✓ Graph API access confirmed"
 }
 
 # Invoke Graph API request - returns JSON to stdout, logs to stderr
@@ -351,14 +373,29 @@ setup_restricted_au() {
         new_au=$(graph_request "POST" \
             "https://graph.microsoft.com/v1.0/directory/administrativeUnits" \
             "Creating administrative unit '$au_name'" \
-            "$au_body")
+            "$au_body" \
+            "true")
         
-        au_id=$(echo "$new_au" | jq -r '.id')
-        if [ -n "$au_id" ] && [ "$au_id" != "null" ]; then
-            log "green" "Successfully created administrative unit: $au_name (ID: $au_id)"
-        else
-            log "red" "Failed to create administrative unit"
+        au_id=$(echo "$new_au" | jq -r '.id' 2>/dev/null || echo "")
+        
+        if [ -z "$au_id" ] || [ "$au_id" = "null" ]; then
+            log "yellow" ""
+            log "yellow" "⚠️  Could not create Administrative Unit automatically"
+            log "yellow" "   This likely means insufficient Graph API permissions."
+            log "yellow" ""
+            log "yellow" "📋 Manual steps required:"
+            log "yellow" "   1. Go to Azure Portal → Entra ID → Administrative Units"
+            log "yellow" "   2. Click 'New administrative unit'"
+            log "yellow" "   3. Name: $au_name"
+            log "yellow" "   4. Description: Restricted administrative unit for tenant $tenant_code management operations"
+            log "yellow" "   5. Check 'Restricted management administrative unit'"
+            log "yellow" "   6. Click 'Create'"
+            log "yellow" ""
+            log "yellow" "   After creating the AU manually, re-run this script."
+            log "yellow" ""
             exit 1
+        else
+            log "green" "Successfully created administrative unit: $au_name (ID: $au_id)"
         fi
     fi
     
