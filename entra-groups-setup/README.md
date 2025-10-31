@@ -12,7 +12,7 @@ Before running the script, **manually create the Administrative Unit** (due to C
 1. Go to **Azure Portal** → **Entra ID** → **Administrative Units**
 2. Click **"New administrative unit"**
 3. Configure:
-   - **Name**: `{your-tenant-code}-tenant-admin` (e.g., `7qx45m-tenant-admin`)
+   - **Name**: `{your-tenant-code}-tenant-admin`
    - **Description**: Restricted administrative unit for tenant management operations
    - **✓ Check**: "Restricted management administrative unit"
 4. Click **Create**
