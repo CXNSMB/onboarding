@@ -12,6 +12,21 @@
     Tenant code to use for group naming (optional, will be derived if not provided)
 .PARAMETER SetupEntraOnly
     Only setup Entra ID administrative unit and roles, skip group creation
+.PARAMETER SuperAdmins
+    Comma-separated list of user principal names to add to groups with include-super-admin flag
+    Example: -SuperAdmins "user1@domain.com,user2@domain.com"
+.PARAMETER AllSubscriptions
+    Process subscription-level groups for all subscriptions in the current tenant.
+    When set, the script will:
+    - Query all subscriptions using 'az account list'
+    - Filter by homeTenantId matching the current tenant
+    - Create subscription-level groups for each subscription with appropriate prefix
+    - Save all subscriptions to the configuration file
+    If not set, only the active subscription is processed (default behavior).
+.PARAMETER EntraOnly
+    Only process Entra ID tenant-level groups. Skip all subscription-level groups.
+.PARAMETER SubscriptionsOnly
+    Only process subscription-level groups. Skip all Entra ID tenant-level groups.
 .NOTES
     Requires: Global Admin and Subscription Owner permissions
     Requires: Azure CLI (az) installed and logged in
@@ -24,7 +39,11 @@ param(
     [string]$ConfigFile,
     [string]$TenantCode,
     [switch]$SetupEntraOnly,
-    [switch]$ShowPassword
+    [switch]$ShowPassword,
+    [string]$SuperAdmins,
+    [switch]$AllSubscriptions,
+    [switch]$EntraOnly,
+    [switch]$SubscriptionsOnly
 )
 
 # Hard-coded group definitions for standalone usage (names without sec-tenant- prefix)
@@ -34,21 +53,26 @@ $aTenantGroups = @(
     "roles"=@("User Administrator","Groups Administrator")},
     @{"name"="elevadmin";
     "description"="group with elevated roles";
+     "include-super-admin" = $true;
     "roles"=@("User Administrator","Groups Administrator","Security Administrator","Application Administrator","Global Reader","License Administrator","Authentication Administrator","Authentication Policy Administrator", "Privileged Authentication Administrator","Conditional Access Administrator")},
     @{"name"="dailyadmin";
     "description"="group for daily operations";
     "roles"=@("User Administrator","Groups Administrator")},
     @{"name"="sharepoint-admin";
     "description"="group for SharePoint administration";
+    "include-super-admin" = $true;
     "roles"=@("SharePoint Administrator")},
     @{"name"="intune-admin";
+    "include-super-admin" = $true;
     "description"="group for Intune administration";
     "roles"=@("Intune Administrator")},
     @{"name"="teams-admin";
+    "include-super-admin" = $true;
     "description"="group for Teams administration";
     "roles"=@("Teams Administrator")},
     @{"name"="privileged-role-admin";
     "description"="group for Privileged Role administration";
+    "include-super-admin" = $true;
     "roles"=@("Privileged Role Administrator")},
     @{"name"="reservations-read";
     "description"="can read azure reservations";
@@ -61,6 +85,10 @@ $aTenantGroups = @(
     "roles"=@()},
     @{"name"="break-glass";
     "description"="break glass accounts, dynamic, informational";
+    "roles"=@()},
+    @{"name"="super-admin";
+    "super-admin"=$true;
+    "description"="Members of this group can be made eligible for high level roles, in case of P2 license availability";
     "roles"=@()}
 )
 
@@ -70,7 +98,10 @@ $aSubscriptionGroups = @(
     "RBACroles"=@("Reader")},
     @{"name"="dailyadmin";
     "description"="Daily admin on subscription";
-    "RBACroles"=@("Reader","Backup Reader","Desktop Virtualization Virtual Machine Contributor","Desktop Virtualization User Session Operator","DNS Zone Contributor")},
+    "RBACroles"=@("Reader","Backup Reader","Desktop Virtualization Session Host Operator","Desktop Virtualization User Session Operator","Desktop Virtualization Power On Off Contributor")},
+   @{"name"="dnsadmin";
+    "description"="DNS Contributor on subscription";
+    "RBACroles"=@("DNS Zone Contributor")},
     @{"name"="contributor";
     "description"="Contributor on subscription";
     "RBACroles"=@("Contributor")},
@@ -79,6 +110,7 @@ $aSubscriptionGroups = @(
     "RBACroles"=@("Cost Management Reader")},
     @{"name"="sec-uaa";
     "description"="Restricted User Access Administrator";
+    "include-super-admin" = $true;
     "RBACroles"=@("User Access Administrator")},
     @{"name"="owner";
     "description"="Owner on subscription";
@@ -126,7 +158,8 @@ function Save-ConfigurationFile {
         [object]$Config,
         [hashtable]$ProcessedTenantGroups = @{},
         [hashtable]$ProcessedSubscriptionGroups = @{},
-        [string]$SubscriptionPrefix = ""
+        [string]$SubscriptionPrefix = "",
+        [array]$AllSubscriptionPrefixes = @()
     )
     
     try {
@@ -175,8 +208,30 @@ function Save-ConfigurationFile {
             $configHash.tenantconfig.groups[$cleanGroupName] = $ProcessedTenantGroups[$groupName]
         }
         
-        # Add or update current subscription with prefix and groups
-        if ($Config.subscriptionId) {
+        # Handle multiple subscriptions if AllSubscriptionPrefixes is provided
+        if ($AllSubscriptionPrefixes.Count -gt 0) {
+            # Process groups from all subscriptions
+            foreach ($subInfo in $AllSubscriptionPrefixes) {
+                $subId = $subInfo.id
+                $subPrefix = $subInfo.prefix
+                
+                # Initialize subscription entry
+                $configHash.subscriptions[$subId] = @{
+                    prefix = "sec-az-$($Config.tenantCode)-$subPrefix"
+                    groups = @{}
+                }
+                
+                # Find and add groups for this subscription prefix
+                foreach ($fullGroupName in $ProcessedSubscriptionGroups.Keys) {
+                    if ($fullGroupName -match "^sec-az-$($Config.tenantCode)-$subPrefix-(.+)$") {
+                        $cleanGroupName = $Matches[1]
+                        $configHash.subscriptions[$subId].groups[$cleanGroupName] = $ProcessedSubscriptionGroups[$fullGroupName]
+                    }
+                }
+            }
+        }
+        # Single subscription mode
+        elseif ($Config.subscriptionId) {
             $configHash.subscriptions[$Config.subscriptionId] = @{
                 prefix = "sec-az-$($Config.tenantCode)-$SubscriptionPrefix"
                 groups = @{}
@@ -615,6 +670,104 @@ function Update-GroupAdminUnit {
     }
 }
 
+# Function to add a group as member of another group
+function Add-GroupMember {
+    param(
+        [string]$GroupId,
+        [string]$MemberGroupId,
+        [string]$GroupName,
+        [string]$MemberGroupName
+    )
+    
+    if ($WhatIf) {
+        Write-ColorOutput "WHATIF: Would add group '$MemberGroupName' as member of group '$GroupName'" "Yellow"
+        return $true
+    }
+    
+    try {
+        # Check if member already exists
+        $existingMembers = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/groups/$GroupId/members?`$filter=id eq '$MemberGroupId'" -Description "Checking if group '$MemberGroupName' is already member of '$GroupName'" -IgnoreError
+        
+        if ($existingMembers -and $existingMembers.value -and $existingMembers.value.Count -gt 0) {
+            Write-ColorOutput "Group '$MemberGroupName' is already a member of '$GroupName'" "Yellow"
+            return $true
+        }
+        
+        # Add member
+        $memberBody = @{
+            "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$MemberGroupId"
+        }
+        $addMember = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/groups/$GroupId/members/`$ref" -Body $memberBody -Description "Adding group '$MemberGroupName' as member of '$GroupName'" -IgnoreError
+        
+        if ($null -ne $addMember -or $LASTEXITCODE -eq 0) {
+            Write-ColorOutput "Successfully added group '$MemberGroupName' as member of '$GroupName'" "Green"
+            return $true
+        } else {
+            Write-ColorOutput "Failed to add group '$MemberGroupName' as member of '$GroupName'" "Red"
+            return $false
+        }
+    }
+    catch {
+        Write-ColorOutput "Error adding group '$MemberGroupName' as member of '$GroupName': $($_.Exception.Message)" "Red"
+        return $false
+    }
+}
+
+# Function to assign AU-scoped roles to a group
+function Add-GroupToAdminUnitWithRoles {
+    param(
+        [string]$GroupId,
+        [string]$GroupName,
+        [string]$AdminUnitId
+    )
+    
+    if (-not $GroupId -or -not $AdminUnitId) {
+        Write-ColorOutput "Warning: Cannot assign AU roles to group - missing GroupId or AdminUnitId" "Yellow"
+        return $false
+    }
+    
+    Write-ColorOutput "`nAssigning AU-scoped roles to group '$GroupName'..." "Cyan"
+    
+    if ($WhatIf) {
+        Write-ColorOutput "WHATIF: Would assign User Administrator and Groups Administrator roles to group (AU-scoped)" "Yellow"
+        return $true
+    }
+    
+    # Define roles to assign (scoped to AU)
+    $rolesToAssign = @{
+        "User Administrator" = "fe930be7-5e62-47db-91af-98c3a49a38b1"
+        "Groups Administrator" = "fdd7a751-b60b-444a-984c-02652fe8fa1c"
+    }
+    
+    # Assign each role to the group (scoped to AU)
+    foreach ($roleName in $rolesToAssign.Keys) {
+        $roleId = $rolesToAssign[$roleName]
+        
+        # Check if assignment already exists
+        $existingAssignments = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$GroupId' and roleDefinitionId eq '$roleId' and directoryScopeId eq '/administrativeUnits/$AdminUnitId'" -Description "Checking existing role assignments for $roleName" -IgnoreError
+        
+        if ($existingAssignments -and $existingAssignments.value -and $existingAssignments.value.Count -gt 0) {
+            Write-ColorOutput "Role '$roleName' already assigned to group '$GroupName' (AU-scoped)" "Yellow"
+            continue
+        }
+        
+        $roleAssignmentBody = @{
+            "@odata.type" = "#microsoft.graph.unifiedRoleAssignment"
+            roleDefinitionId = $roleId
+            principalId = $GroupId
+            directoryScopeId = "/administrativeUnits/$AdminUnitId"
+        }
+        
+        $roleAssignment = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments" -Body $roleAssignmentBody -Description "Assigning $roleName role to group '$GroupName' in AU" -IgnoreError
+        
+        if ($roleAssignment) {
+            Write-ColorOutput "✓ Assigned $roleName role to group '$GroupName' (AU-scoped)" "Green"
+        }
+    }
+    
+    return $true
+}
+
 # Function to create or verify MSP admin user
 function New-MspAdminUser {
     param(
@@ -753,6 +906,67 @@ function Add-MspUserToAdminUnit {
     return $true
 }
 
+# Function to add calling user to AU with roles
+function Add-CallingUserToAdminUnit {
+    param(
+        [string]$UserId,
+        [string]$UserDisplayName,
+        [string]$AdminUnitId
+    )
+    
+    if (-not $UserId -or -not $AdminUnitId) {
+        Write-ColorOutput "Warning: Cannot add calling user to AU - missing UserId or AdminUnitId" "Yellow"
+        return $false
+    }
+    
+    Write-ColorOutput "`nAdding calling user to Administrative Unit with roles..." "Cyan"
+    
+    if ($WhatIf) {
+        Write-ColorOutput "WHATIF: Would add calling user '$UserDisplayName' to AU and assign roles" "Yellow"
+        return $true
+    }
+    
+    # First add user as member of AU
+    $memberBody = @{
+        "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$UserId"
+    }
+    $null = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$AdminUnitId/members/`$ref" -Body $memberBody -Description "Adding calling user to administrative unit" -IgnoreError
+    
+    # Define roles to assign (scoped to AU)
+    $rolesToAssign = @{
+        "User Administrator" = "fe930be7-5e62-47db-91af-98c3a49a38b1"
+        "Groups Administrator" = "fdd7a751-b60b-444a-984c-02652fe8fa1c"
+    }
+    
+    # Assign each role to the user (scoped to AU)
+    foreach ($roleName in $rolesToAssign.Keys) {
+        $roleId = $rolesToAssign[$roleName]
+        
+        # Check if assignment already exists
+        $existingAssignments = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$UserId' and roleDefinitionId eq '$roleId' and directoryScopeId eq '/administrativeUnits/$AdminUnitId'" -Description "Checking existing role assignments for $roleName" -IgnoreError
+        
+        if ($existingAssignments -and $existingAssignments.value -and $existingAssignments.value.Count -gt 0) {
+            Write-ColorOutput "Role '$roleName' already assigned to calling user (AU-scoped)" "Yellow"
+            continue
+        }
+        
+        $roleAssignmentBody = @{
+            "@odata.type" = "#microsoft.graph.unifiedRoleAssignment"
+            roleDefinitionId = $roleId
+            principalId = $UserId
+            directoryScopeId = "/administrativeUnits/$AdminUnitId"
+        }
+        
+        $roleAssignment = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments" -Body $roleAssignmentBody -Description "Assigning $roleName role to calling user in AU" -IgnoreError
+        
+        if ($roleAssignment) {
+            Write-ColorOutput "✓ Assigned $roleName role to calling user '$UserDisplayName' (AU-scoped)" "Green"
+        }
+    }
+    
+    return $true
+}
+
 # Function to create or verify customer admin user
 function New-CustomerAdminUser {
     param(
@@ -869,6 +1083,15 @@ function Add-CustomerUserToAdminUnit {
 
 Write-ColorOutput "=== Complete Entra ID Setup ===" "Cyan"
 
+# Validate parameter combinations
+if ($EntraOnly -and $SubscriptionsOnly) {
+    Write-ColorOutput "Error: Cannot use both -EntraOnly and -SubscriptionsOnly switches" "Red"
+    exit 1
+}
+
+# Initialize array to track all created groups with metadata
+$script:allCreatedGroups = @()
+
 # Determine tenant code first (needed for config filename)
 if ($TenantCode) {
     $tenantCode = $TenantCode
@@ -984,11 +1207,46 @@ try {
     Write-ColorOutput "  - Account: $($accountInfo.user.name)" "White"
     Write-ColorOutput "  - Subscription: $($accountInfo.name)" "White"
     Write-ColorOutput "  - Tenant: $($accountInfo.tenantId)" "White"
-    
-    $subscriptionId = $accountInfo.id
-    $subscriptionPrefix = $subscriptionId.Split('-')[0]
-    Write-ColorOutput "  - Subscription prefix: $subscriptionPrefix" "White"
     Write-ColorOutput "  - Tenant code: $tenantCode" "White"
+    
+    # Determine which subscriptions to process (skip if EntraOnly)
+    if (-not $EntraOnly) {
+        if ($AllSubscriptions) {
+            Write-ColorOutput "`nFetching all subscriptions in current tenant..." "Cyan"
+            $allSubs = az account list --all --output json | ConvertFrom-Json
+            
+            # Filter by current tenant
+            $tenantSubs = $allSubs | Where-Object { $_.homeTenantId -eq $accountInfo.tenantId }
+            
+            if ($tenantSubs.Count -eq 0) {
+                Write-ColorOutput "No subscriptions found in tenant $($accountInfo.tenantId)" "Red"
+                exit 1
+            }
+            
+            Write-ColorOutput "Found $($tenantSubs.Count) subscription(s) in current tenant:" "Green"
+            foreach ($sub in $tenantSubs) {
+                $prefix = $sub.id.Split('-')[0]
+                Write-ColorOutput "  - $($sub.name) ($prefix)" "White"
+            }
+            
+            $subscriptionsToProcess = $tenantSubs
+        } else {
+            # Single subscription mode (current behavior)
+            $subscriptionsToProcess = @($accountInfo)
+            $subscriptionPrefix = $accountInfo.id.Split('-')[0]
+            Write-ColorOutput "  - Subscription prefix: $subscriptionPrefix" "White"
+        }
+        
+        # For single subscription mode, keep existing variables
+        if (-not $AllSubscriptions) {
+            $subscriptionId = $accountInfo.id
+            $subscriptionPrefix = $subscriptionId.Split('-')[0]
+        }
+    } else {
+        Write-ColorOutput "  - Subscription processing will be skipped (-EntraOnly specified)" "Yellow"
+        # Initialize empty array to avoid errors
+        $subscriptionsToProcess = @()
+    }
     
     # Initialize or update config with current info
     if (-not $config) {
@@ -996,7 +1254,7 @@ try {
         $config = @{
             tenantCode = $tenantCode
             tenantId = $accountInfo.tenantId
-            subscriptionId = $subscriptionId
+            subscriptionId = if ($EntraOnly -or $AllSubscriptions) { $null } else { $subscriptionId }
             restrictedAdminUnitId = $null
         }
         Write-ColorOutput "Created new configuration structure" "Green"
@@ -1005,7 +1263,7 @@ try {
         $config = @{
             tenantCode = $tenantCode
             tenantId = $accountInfo.tenantId
-            subscriptionId = $subscriptionId
+            subscriptionId = if ($EntraOnly -or $AllSubscriptions) { $null } else { $subscriptionId }
             restrictedAdminUnitId = if ($config.tenantconfig -and $config.tenantconfig.restrictedAdminUnitId) { 
                 $config.tenantconfig.restrictedAdminUnitId 
             } elseif ($config.restrictedAdminUnitId) {
@@ -1048,6 +1306,14 @@ $restrictedAdminUnitId = Set-RestrictedAdminUnit -TenantCode $tenantCode
 
 if ($restrictedAdminUnitId) {
     $config.restrictedAdminUnitId = $restrictedAdminUnitId
+    
+    # Add calling user to AU with User Administrator and Groups Administrator roles
+    if ($currentUser -and $currentUser.id) {
+        $auAdded = Add-CallingUserToAdminUnit -UserId $currentUser.id -UserDisplayName $currentUser.displayName -AdminUnitId $restrictedAdminUnitId
+        if ($auAdded) {
+            Write-ColorOutput "✓ Calling user added to AU with User Administrator and Groups Administrator roles (AU-scoped)" "Green"
+        }
+    }
 }
 
 # Create or verify MSP admin user
@@ -1077,168 +1343,331 @@ $processedSubscriptionGroups = @{}
 if (-not $SetupEntraOnly) {
     Write-ColorOutput "`nStarting deployment of Entra groups using Microsoft Graph REST API..." "Cyan"
 
-    # Process tenant-level groups
-    Write-ColorOutput "`nProcessing tenant-level groups..." "Cyan"
-    foreach ($tenantGroup in $aTenantGroups) {
-        $baseName = $tenantGroup.name
-        $description = $tenantGroup.description
-        $roles = $tenantGroup.roles
+    # ========================================
+    # PHASE 1: TENANT-LEVEL GROUPS
+    # ========================================
+    if (-not $SubscriptionsOnly) {
+        Write-ColorOutput "`n=== PHASE 1: Processing tenant-level groups ===" "Magenta"
         
-        # Generate full group name: sec-tenant-{tenantcode}-{basename}
-        $groupName = "sec-tenant-$tenantCode-$baseName"
-        
-        Write-ColorOutput "`nProcessing tenant group: $groupName" "Cyan"
-        
-        # Create group with role-assignable flag if it has roles
-        # Role-assignable groups are NOT added to AU (to allow member management)
-        # Non-role-assignable groups ARE added to AU
-        $hasRoles = $roles -and $roles.Count -gt 0
-        
-        if ($hasRoles) {
-            # Role-assignable group - do NOT add to AU
-            $group = New-GraphGroup -GroupName $groupName -Description $description -RoleAssignable:$true
-            Write-ColorOutput "Note: Role-assignable group - NOT added to AU (allows member management)" "Yellow"
-        } else {
-            # Regular group - add to AU
-            $group = New-GraphGroup -GroupName $groupName -Description $description -AdminUnitId $restrictedAdminUnitId
+        foreach ($tenantGroup in $aTenantGroups) {
+            $baseName = $tenantGroup.name
+            $description = $tenantGroup.description
+            $roles = $tenantGroup.roles
+            $isSuperAdmin = $tenantGroup.ContainsKey("super-admin") -and $tenantGroup["super-admin"] -eq $true
+            $includeSuperAdmin = $tenantGroup.ContainsKey("include-super-admin") -and $tenantGroup["include-super-admin"] -eq $true
+            
+            # Generate full group name: sec-tenant-{tenantcode}-{basename}
+            $groupName = "sec-tenant-$tenantCode-$baseName"
+            
+            Write-ColorOutput "`nProcessing tenant group: $groupName" "Cyan"
+            
+            # Create group with role-assignable flag if it has roles OR if it's the super-admin group
+            # Role-assignable groups are NOT added to AU (to allow member management)
+            # Non-role-assignable groups ARE added to AU
+            $hasRoles = $roles -and $roles.Count -gt 0
+            $shouldBeRoleAssignable = $hasRoles -or $isSuperAdmin
+            
+            if ($shouldBeRoleAssignable) {
+                # Role-assignable group - do NOT add to AU
+                $group = New-GraphGroup -GroupName $groupName -Description $description -RoleAssignable:$true
+                if ($isSuperAdmin) {
+                    Write-ColorOutput "Note: Super-admin group - role-assignable for future role assignments" "Yellow"
+                }
+                Write-ColorOutput "Note: Role-assignable group - NOT added to AU (allows member management)" "Yellow"
+            } else {
+                # Regular group - add to AU
+                $group = New-GraphGroup -GroupName $groupName -Description $description -AdminUnitId $restrictedAdminUnitId
+            }
+            
+            if ($group) {
+                # Save to processed groups hashtable
+                $processedTenantGroups[$groupName] = $group.id
+                
+                # Add to central tracking array with metadata
+                $script:allCreatedGroups += @{
+                    Name = $groupName
+                    Id = $group.id
+                    Type = "tenant"
+                    IncludeSuperAdmin = $includeSuperAdmin
+                    SubscriptionId = $null
+                    Roles = $roles
+                }
+                
+                if ($hasRoles) {
+                    Write-ColorOutput "Entra directory roles for group '$groupName' will be assigned (tenant-wide)" "Yellow"
+                    foreach ($role in $roles) {
+                        Write-ColorOutput "  - $role" "White"
+                    }
+                    Write-ColorOutput "Group ID: $($group.id)" "White"
+                } else {
+                    Write-ColorOutput "No roles defined for group '$groupName'" "Yellow"
+                }
+            }
         }
         
-        if ($group) {
-            # Save only the group ID to processed groups hashtable
-            $processedTenantGroups[$groupName] = $group.id
+        Write-ColorOutput "`n✓ Tenant groups creation complete" "Green"
+        
+        # Assign Entra directory roles to tenant groups
+        Write-ColorOutput "`nAssigning Entra directory roles to tenant groups..." "Cyan"
+        
+        foreach ($tenantGroup in $aTenantGroups) {
+            $baseName = $tenantGroup.name
+            $roles = $tenantGroup.roles
             
-            if ($hasRoles) {
-                Write-ColorOutput "Entra directory roles for group '$groupName' will be assigned (tenant-wide)" "Yellow"
+            # Generate full group name: sec-tenant-{tenantcode}-{basename}
+            $groupName = "sec-tenant-$tenantCode-$baseName"
+            
+            # Skip groups without roles
+            if (-not $roles -or $roles.Count -eq 0) {
+                continue
+            }
+            
+            Write-ColorOutput "`nProcessing role-assignable group: $groupName" "Cyan"
+            
+            # Find the group by name
+            $existingGroup = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayName eq '$groupName'" -Description "Finding group '$groupName'"
+            
+            if ($existingGroup -and $existingGroup.value -and $existingGroup.value.Count -gt 0) {
+                $group = $existingGroup.value[0]
+                
+                # Assign Entra directory roles (tenant-wide, not AU-scoped)
                 foreach ($role in $roles) {
-                    Write-ColorOutput "  - $role" "White"
+                    Set-EntraDirectoryRole -GroupId $group.id -RoleDisplayName $role -GroupDisplayName $group.displayName
                 }
-                Write-ColorOutput "Group ID: $($group.id)" "White"
             } else {
-                Write-ColorOutput "No roles defined for group '$groupName'" "Yellow"
+                Write-ColorOutput "Warning: Group '$groupName' not found" "Red"
             }
         }
-    }
-
-    # Process subscription-level groups - First create all groups
-    Write-ColorOutput "`nProcessing subscription-level groups..." "Cyan"
-    Write-ColorOutput "Step 1: Creating all subscription groups..." "Cyan"
-    
-    $groupsToAssignRbac = @()
-    
-    foreach ($subGroup in $aSubscriptionGroups) {
-        $baseName = $subGroup.name
-        $description = $subGroup.description
-        $rbacRoles = $subGroup.RBACroles
         
-        # Generate the full group name with tenant code and subscription prefix
-        $groupName = "sec-az-$tenantCode-$subscriptionPrefix-$baseName"
+        # Process tenant-level RBAC role assignments for Azure Reservations
+        Write-ColorOutput "`nAssigning tenant-level RBAC roles for Azure Reservations..." "Cyan"
         
-        Write-ColorOutput "`nProcessing subscription group: $groupName" "Cyan"
+        $reservationsRoleAssignments = @(
+            @{
+                GroupName = "sec-tenant-$tenantCode-reservations-read"
+                RoleName = "Reservations Reader"
+                Scope = "/providers/Microsoft.Capacity"
+            },
+            @{
+                GroupName = "sec-tenant-$tenantCode-reservations-admin"
+                RoleName = "Reservations Administrator"
+                Scope = "/providers/Microsoft.Capacity"
+            },
+            @{
+                GroupName = "sec-tenant-$tenantCode-reservations-purchase"
+                RoleName = "Reservation Purchaser"
+                Scope = "/providers/Microsoft.Capacity"
+            }
+        )
         
-        # Create group and add to administrative unit
-        $group = New-GraphGroup -GroupName $groupName -Description $description -AdminUnitId $restrictedAdminUnitId
-        
-        if ($group) {
-            # Save only the group ID to processed groups hashtable  
-            $processedSubscriptionGroups[$groupName] = $group.id
+        foreach ($assignment in $reservationsRoleAssignments) {
+            Write-ColorOutput "`nAssigning '$($assignment.RoleName)' to group '$($assignment.GroupName)'..." "Cyan"
+            $result = Set-TenantRbacRole -GroupName $assignment.GroupName -RoleName $assignment.RoleName -Scope $assignment.Scope
             
-            # Store group info for RBAC assignment later
-            if ($rbacRoles -and $rbacRoles.Count -gt 0) {
-                $groupsToAssignRbac += @{
-                    GroupId = $group.id
-                    GroupName = $groupName
-                    Roles = $rbacRoles
-                }
-            } else {
-                Write-ColorOutput "No RBAC roles defined for group '$groupName'" "Yellow"
+            if (-not $result) {
+                Write-ColorOutput "Warning: Failed to assign role for group '$($assignment.GroupName)'" "Yellow"
             }
         }
-    }
-    
-    # Wait for replication if any groups need RBAC assignments
-    if ($groupsToAssignRbac.Count -gt 0) {
-        Write-ColorOutput "`nStep 2: Waiting 15 seconds for Azure AD replication..." "Yellow"
-        Start-Sleep -Seconds 15
         
-        Write-ColorOutput "Step 3: Assigning RBAC roles to subscription groups..." "Cyan"
-        foreach ($groupInfo in $groupsToAssignRbac) {
-            Write-ColorOutput "`nAssigning RBAC roles to $($groupInfo.GroupName)..." "Cyan"
-            foreach ($role in $groupInfo.Roles) {
-                Set-AzRoleAssignment -GroupObjectId $groupInfo.GroupId -RoleName $role -GroupName $groupInfo.GroupName -SubscriptionId $subscriptionId
-            }
-        }
-    }
-}
-
-# Process Entra directory role assignments
-Write-ColorOutput "`nProcessing Entra directory role assignments..." "Cyan"
-
-foreach ($tenantGroup in $aTenantGroups) {
-    $baseName = $tenantGroup.name
-    $roles = $tenantGroup.roles
-    
-    # Generate full group name: sec-tenant-{tenantcode}-{basename}
-    $groupName = "sec-tenant-$tenantCode-$baseName"
-    
-    # Skip groups without roles
-    if (-not $roles -or $roles.Count -eq 0) {
-        Write-ColorOutput "Skipping group '$groupName' - no roles defined" "Yellow"
-        continue
-    }
-    
-    Write-ColorOutput "`nProcessing role-assignable group: $groupName" "Cyan"
-    
-    # Find the group by name
-    $existingGroup = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayName eq '$groupName'" -Description "Finding group '$groupName'"
-    
-    if ($existingGroup -and $existingGroup.value -and $existingGroup.value.Count -gt 0) {
-        $group = $existingGroup.value[0]
-        
-        # NOTE: Role-assignable groups are intentionally NOT added to the AU
-        # This allows member management through Azure Portal (Graph API limitation)
-        
-        # Assign Entra directory roles (tenant-wide, not AU-scoped)
-        foreach ($role in $roles) {
-            Set-EntraDirectoryRole -GroupId $group.id -RoleDisplayName $role -GroupDisplayName $group.displayName
-        }
+        Write-ColorOutput "`n✓ Tenant role assignments complete" "Green"
     } else {
-        Write-ColorOutput "Warning: Group '$groupName' not found. Please run this script without -SetupEntraOnly first." "Red"
+        Write-ColorOutput "`n⊘ Skipping tenant-level groups (-SubscriptionsOnly specified)" "Yellow"
     }
-}
 
-# Process tenant-level RBAC role assignments for Azure Reservations
-Write-ColorOutput "`nProcessing tenant-level RBAC role assignments for Azure Reservations..." "Cyan"
-
-$reservationsRoleAssignments = @(
-    @{
-        GroupName = "sec-tenant-$tenantCode-reservations-read"
-        RoleName = "Reservations Reader"
-        Scope = "/providers/Microsoft.Capacity"
-    },
-    @{
-        GroupName = "sec-tenant-$tenantCode-reservations-admin"
-        RoleName = "Reservations Administrator"
-        Scope = "/providers/Microsoft.Capacity"
-    },
-    @{
-        GroupName = "sec-tenant-$tenantCode-reservations-purchase"
-        RoleName = "Reservation Purchaser"
-        Scope = "/providers/Microsoft.Capacity"
+    # ========================================
+    # PHASE 2: SUBSCRIPTION-LEVEL GROUPS
+    # ========================================
+    if (-not $EntraOnly) {
+        Write-ColorOutput "`n=== PHASE 2: Processing subscription-level groups ===" "Magenta"
+        
+        # Loop through each subscription to process
+        foreach ($subToProcess in $subscriptionsToProcess) {
+            $subscriptionId = $subToProcess.id
+            $subscriptionPrefix = $subscriptionId.Split('-')[0]
+            $subscriptionName = $subToProcess.name
+            
+            Write-ColorOutput "`n--- Subscription: $subscriptionName ($subscriptionPrefix) ---" "Cyan"
+            
+            $groupsToAssignRbac = @()
+            
+            foreach ($subGroup in $aSubscriptionGroups) {
+                $baseName = $subGroup.name
+                $description = $subGroup.description
+                $rbacRoles = $subGroup.RBACroles
+                $includeSuperAdmin = $subGroup.ContainsKey("include-super-admin") -and $subGroup["include-super-admin"] -eq $true
+                
+                # Generate the full group name with tenant code and subscription prefix
+                $groupName = "sec-az-$tenantCode-$subscriptionPrefix-$baseName"
+                
+                Write-ColorOutput "`nProcessing subscription group: $groupName" "Cyan"
+                
+                # Create group and add to administrative unit
+                $group = New-GraphGroup -GroupName $groupName -Description $description -AdminUnitId $restrictedAdminUnitId
+                
+                if ($group) {
+                    # Save to processed groups hashtable  
+                    $processedSubscriptionGroups[$groupName] = $group.id
+                    
+                    # Add to central tracking array with metadata
+                    $script:allCreatedGroups += @{
+                        Name = $groupName
+                        Id = $group.id
+                        Type = "subscription"
+                        IncludeSuperAdmin = $includeSuperAdmin
+                        SubscriptionId = $subscriptionId
+                        SubscriptionPrefix = $subscriptionPrefix
+                        RBACRoles = $rbacRoles
+                    }
+                    
+                    # Store group info for RBAC assignment later
+                    if ($rbacRoles -and $rbacRoles.Count -gt 0) {
+                        $groupsToAssignRbac += @{
+                            GroupId = $group.id
+                            GroupName = $groupName
+                            Roles = $rbacRoles
+                        }
+                    } else {
+                        Write-ColorOutput "No RBAC roles defined for group '$groupName'" "Yellow"
+                    }
+                }
+            }
+            
+            # Wait for replication if any groups need RBAC assignments
+            if ($groupsToAssignRbac.Count -gt 0) {
+                Write-ColorOutput "`nWaiting 15 seconds for Azure AD replication..." "Yellow"
+                Start-Sleep -Seconds 15
+                
+                Write-ColorOutput "Assigning RBAC roles to subscription groups for $subscriptionPrefix..." "Cyan"
+                foreach ($groupInfo in $groupsToAssignRbac) {
+                    Write-ColorOutput "`nAssigning RBAC roles to $($groupInfo.GroupName)..." "Cyan"
+                    foreach ($role in $groupInfo.Roles) {
+                        Set-AzRoleAssignment -GroupObjectId $groupInfo.GroupId -RoleName $role -GroupName $groupInfo.GroupName -SubscriptionId $subscriptionId
+                    }
+                }
+            }
+        }
+        
+        Write-ColorOutput "`n✓ Subscription groups creation complete" "Green"
+    } else {
+        Write-ColorOutput "`n⊘ Skipping subscription-level groups (-EntraOnly specified)" "Yellow"
     }
-)
-
-foreach ($assignment in $reservationsRoleAssignments) {
-    Write-ColorOutput "`nAssigning '$($assignment.RoleName)' to group '$($assignment.GroupName)'..." "Cyan"
-    $result = Set-TenantRbacRole -GroupName $assignment.GroupName -RoleName $assignment.RoleName -Scope $assignment.Scope
     
-    if (-not $result) {
-        Write-ColorOutput "Warning: Failed to assign role for group '$($assignment.GroupName)'" "Yellow"
+    # ========================================
+    # PHASE 3: GROUP MEMBERSHIP ASSIGNMENTS
+    # ========================================
+    Write-ColorOutput "`n=== PHASE 3: Processing group memberships ===" "Magenta"
+    
+    # Filter groups that need super-admin members
+    $groupsWithSuperAdmin = $script:allCreatedGroups | Where-Object { $_.IncludeSuperAdmin -eq $true }
+    
+    if ($groupsWithSuperAdmin.Count -eq 0) {
+        Write-ColorOutput "No groups with include-super-admin flag found" "Yellow"
+    } else {
+        Write-ColorOutput "Found $($groupsWithSuperAdmin.Count) group(s) with include-super-admin flag" "Green"
+        foreach ($grp in $groupsWithSuperAdmin) {
+            Write-ColorOutput "  - $($grp.Name)" "White"
+        }
+        
+        # Collect users to add
+        $usersToAdd = @()
+        
+        # Add SuperAdmins parameter users
+        if ($SuperAdmins) {
+            $superAdminUsers = $SuperAdmins -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+            if ($superAdminUsers.Count -gt 0) {
+                Write-ColorOutput "`nSuper-admin users from parameter:" "Cyan"
+                foreach ($upn in $superAdminUsers) {
+                    Write-ColorOutput "  - $upn" "White"
+                    $usersToAdd += @{
+                        UPN = $upn
+                        Source = "SuperAdmins parameter"
+                    }
+                }
+            }
+        }
+        
+        # Add MSP admin user
+        if ($mspAdminUserResult -and $mspAdminUserResult.user -and $mspAdminUserResult.user.userPrincipalName) {
+            $mspUpn = $mspAdminUserResult.user.userPrincipalName
+            Write-ColorOutput "`nMSP admin user:" "Cyan"
+            Write-ColorOutput "  - $mspUpn" "White"
+            $usersToAdd += @{
+                UPN = $mspUpn
+                UserId = $mspAdminUserResult.user.id  # Already have the ID
+                Source = "MSP admin"
+            }
+        }
+        
+        # Process each user
+        foreach ($userInfo in $usersToAdd) {
+            $userPrincipalName = $userInfo.UPN
+            Write-ColorOutput "`nProcessing user: $userPrincipalName ($($userInfo.Source))" "Cyan"
+            
+            # Get user ID if not already provided
+            if (-not $userInfo.UserId) {
+                $user = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/users?`$filter=userPrincipalName eq '$userPrincipalName'&`$select=id,userPrincipalName,displayName" -Description "Getting user '$userPrincipalName'" -IgnoreError
+                
+                if (-not $user -or -not $user.value -or $user.value.Count -eq 0) {
+                    Write-ColorOutput "User '$userPrincipalName' not found, skipping" "Red"
+                    continue
+                }
+                
+                $userId = $user.value[0].id
+                $displayName = $user.value[0].displayName
+                Write-ColorOutput "Found user: $displayName ($userPrincipalName)" "Green"
+            } else {
+                $userId = $userInfo.UserId
+                Write-ColorOutput "Using existing user ID: $userId" "Green"
+            }
+            
+            # Add user to all groups with include-super-admin=true
+            foreach ($targetGroup in $groupsWithSuperAdmin) {
+                $targetGroupName = $targetGroup.Name
+                $targetGroupId = $targetGroup.Id
+                
+                if ($WhatIf) {
+                    Write-ColorOutput "WHATIF: Would add user '$userPrincipalName' to group '$targetGroupName'" "Yellow"
+                } else {
+                    # Check if user is already member
+                    $existingMember = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/groups/$targetGroupId/members?`$filter=id eq '$userId'&`$select=id" -Description "Checking if user is member of '$targetGroupName'" -IgnoreError
+                    
+                    if ($existingMember -and $existingMember.value -and $existingMember.value.Count -gt 0) {
+                        Write-ColorOutput "User '$userPrincipalName' is already member of '$targetGroupName'" "Yellow"
+                    } else {
+                        $memberBody = @{
+                            "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$userId"
+                        }
+                        $addUserToGroup = Invoke-GraphRequest -Method "POST" -Uri "https://graph.microsoft.com/v1.0/groups/$targetGroupId/members/`$ref" -Body $memberBody -Description "Adding user '$userPrincipalName' to group '$targetGroupName'" -IgnoreError
+                        
+                        if ($addUserToGroup -or $LASTEXITCODE -eq 0) {
+                            Write-ColorOutput "✓ Added user '$userPrincipalName' to '$targetGroupName'" "Green"
+                        } else {
+                            Write-ColorOutput "Failed to add user '$userPrincipalName' to '$targetGroupName'" "Red"
+                        }
+                    }
+                }
+            }
+        }
+        
+        Write-ColorOutput "`n✓ Membership processing complete" "Green"
     }
 }
 
 # Save configuration
 if ((-not $SetupEntraOnly) -and ($configExists -or -not $WhatIf)) {
-    Save-ConfigurationFile -Path $ConfigFile -Config $config -ProcessedTenantGroups $processedTenantGroups -ProcessedSubscriptionGroups $processedSubscriptionGroups -SubscriptionPrefix $subscriptionPrefix
+    if ($AllSubscriptions) {
+        # Prepare subscription prefix info for all processed subscriptions
+        $allSubPrefixes = @()
+        foreach ($sub in $subscriptionsToProcess) {
+            $allSubPrefixes += @{
+                id = $sub.id
+                prefix = $sub.id.Split('-')[0]
+            }
+        }
+        Save-ConfigurationFile -Path $ConfigFile -Config $config -ProcessedTenantGroups $processedTenantGroups -ProcessedSubscriptionGroups $processedSubscriptionGroups -AllSubscriptionPrefixes $allSubPrefixes
+    } else {
+        Save-ConfigurationFile -Path $ConfigFile -Config $config -ProcessedTenantGroups $processedTenantGroups -ProcessedSubscriptionGroups $processedSubscriptionGroups -SubscriptionPrefix $subscriptionPrefix
+    }
     Write-ColorOutput "- Configuration saved to: $ConfigFile" "White"
 } else {
     Write-ColorOutput "- Configuration not saved (SetupEntraOnly mode or WhatIf)" "Yellow"
@@ -1247,6 +1676,9 @@ if ((-not $SetupEntraOnly) -and ($configExists -or -not $WhatIf)) {
 Write-ColorOutput "`n=== Complete Entra ID Setup Finished ===" "Green"
 Write-ColorOutput "Summary:" "Cyan"
 Write-ColorOutput "✓ Current user: $($currentUser.displayName) ($($currentUser.userPrincipalName))" "White"
+if ($restrictedAdminUnitId) {
+    Write-ColorOutput "  - Added to Administrative Unit with User Administrator and Groups Administrator roles (AU-scoped)" "Cyan"
+}
 
 # Show MSP admin user info if created
 if ($mspAdminUserResult -and $mspAdminUserResult.user) {
@@ -1292,8 +1724,35 @@ if ($restrictedAdminUnitId) {
 
 if (-not $SetupEntraOnly) {
     Write-ColorOutput "✓ Deployment completed!" "White"
-    Write-ColorOutput "  - Tenant groups: $($aTenantGroups.Count)" "White"
-    Write-ColorOutput "  - Subscription groups: $($aSubscriptionGroups.Count) (prefixed with 'sec-az-$tenantCode-$subscriptionPrefix-')" "White"
+    
+    # Count groups from the central tracking array
+    $tenantGroupsCreated = ($script:allCreatedGroups | Where-Object { $_.Type -eq "tenant" }).Count
+    $subscriptionGroupsCreated = ($script:allCreatedGroups | Where-Object { $_.Type -eq "subscription" }).Count
+    
+    if ($EntraOnly) {
+        Write-ColorOutput "  - Tenant groups processed: $tenantGroupsCreated" "White"
+        Write-ColorOutput "  - Subscription groups: Skipped (-EntraOnly)" "Yellow"
+    } elseif ($SubscriptionsOnly) {
+        Write-ColorOutput "  - Tenant groups: Skipped (-SubscriptionsOnly)" "Yellow"
+        Write-ColorOutput "  - Subscription groups processed: $subscriptionGroupsCreated" "White"
+        if ($AllSubscriptions) {
+            $subsProcessed = $subscriptionsToProcess.Count
+            Write-ColorOutput "  - Subscriptions processed: $subsProcessed" "White"
+        }
+    } else {
+        Write-ColorOutput "  - Tenant groups processed: $tenantGroupsCreated" "White"
+        Write-ColorOutput "  - Subscription groups processed: $subscriptionGroupsCreated" "White"
+        if ($AllSubscriptions) {
+            $subsProcessed = $subscriptionsToProcess.Count
+            Write-ColorOutput "  - Subscriptions processed: $subsProcessed" "White"
+        }
+    }
+    
+    # Show super-admin membership info
+    $superAdminGroups = ($script:allCreatedGroups | Where-Object { $_.IncludeSuperAdmin -eq $true }).Count
+    if ($superAdminGroups -gt 0) {
+        Write-ColorOutput "  - Groups with super-admin members: $superAdminGroups" "White"
+    }
     
     if ($restrictedAdminUnitId) {
         Write-ColorOutput "  - Groups added to Administrative Unit" "White"
